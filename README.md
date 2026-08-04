@@ -48,6 +48,7 @@ These are fixed. Please do not substitute.
 | | |
 |---|---|
 | **Repo** | Monorepo on GitHub. Frontend and backend in one repository. |
+| **Monorepo tooling** | **Turborepo.** Configure the pipeline so Vercel builds only what changed. |
 | **Frontend** | **Angular 22.** Standalone components. Use signals where they fit. |
 | **Auth** | Supabase Auth. Working signup and login, not stubbed. |
 | **Database** | Supabase (Postgres). |
@@ -68,7 +69,7 @@ Do not reach for Temporal, Inngest or similar. We want your design thinking, not
 Stating this openly, because you would otherwise reasonably skip half of it.
 
 1. **Front-end craft.** Component structure, state handling, forms at real complexity, and whether the result is something a loan officer could move through quickly. This carries the most weight.
-2. **Repo and monorepo structure.** How you organise a codebase someone else has to work in.
+2. **Repo and monorepo structure.** How you organise a codebase someone else has to work in, and how you configure the build pipeline.
 3. **Component library choices.** Whether you used one, which, and why. Writing it yourself is a legitimate answer if you can defend it.
 4. **CI/CD.** That a pipeline exists, runs, and does something useful.
 5. **Workflow modelling.** States, transitions, and durability.
@@ -83,26 +84,19 @@ We are explicitly **not** assessing visual design polish, test coverage percenta
 
 1. **The GitHub repo**, public or with access shared.
 2. **The live Vercel URL.**
-3. **A README** covering, briefly:
-   - Which option you chose and why
-      - How to run it locally
-         - Your workflow model: the states, and what moves between them
-            - **How you used AI.** Which tools, what you delegated, what you rejected or rewrote, and anything it produced that looked plausible but was wrong.
-               - What you would do next with another two hours
+3. **A README** covering, briefly: which option you chose and why, how to run it locally, your workflow model (the states and what moves between them), and what you would do next with another two hours.
+4. **A section in that README on how you used AI.** Which tools, what you delegated, what you rejected or rewrote, and anything it produced that looked plausible but was wrong. This is not a formality. It is one of the more useful things you can tell us about yourself.
 
-               That AI section is not a formality. It is one of the more useful things you can tell us about yourself.
+---
 
-               ---
+## What happens next
 
-               ## What happens next
+A 45-minute session with our CTO. You share your screen and walk us through what you built. We will ask why you made specific decisions, and we will give you one additional requirement to implement while we watch.
 
-               A 45-minute session with our CTO. You share your screen and walk us through what you built. We will ask why you made specific decisions, and we will give you one additional requirement to implement while we watch.
+You may use AI in that session too. Obviously.
 
-               You may use AI in that session too. Obviously.
+---
 
-               ---
+## Questions
 
-               ## Questions
-
-               If anything here is ambiguous, ask rather than guess. Knowing when to ask is part of the job.
-               
+If anything here is ambiguous, ask rather than guess. Knowing when to ask is part of the job.
