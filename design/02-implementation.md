@@ -2,67 +2,96 @@
 
 How the picked theme becomes running code. Applies identically to all four, which is the point.
 
-## 1. Emit CSS variables from tokens.json
+## 1. Emit the tokens from tokens.json
 
-`tokens.json` is the source of truth. A build step emits the stylesheet, so the SVG previews, the
-contrast report and the running app all read the same numbers - the no-duplication rule from
-`../CLAUDE.md` applied to colour.
+`tokens.json` is the source of truth. A build step emits the stylesheets, so the SVG preview, the
+generated token table, the contrast report and the running app all read the same numbers - the
+no-duplication rule from `../CLAUDE.md` applied to colour.
 
 ```
 packages/ui/
   tokens/
     tokens.json          <- copied from design/, single theme
-    emit.ts              <- writes _tokens.scss
-    _tokens.scss         <- GENERATED, checked in, never hand-edited
+    emit.ts              <- writes both artefacts below
+    _tokens.css          <- GENERATED. The runtime CSS variables.
+    _palette.scss        <- GENERATED. Build-time Sass map for Material.
 ```
 
-```scss
-/* _tokens.scss - generated */
+Two artefacts rather than one, because the two consumers need different things and neither can
+read the other's format: Tailwind and the components need **runtime** CSS variables that swap with
+the colour scheme, while Angular Material's `mat.theme` needs a **build-time** Sass map to
+generate its tonal palettes. Both are emitted from the same JSON in the same step, so this is two
+renderings of one definition, not two definitions.
+
+```css
+/* _tokens.css - generated, never hand-edited */
 :root {
   --lj-bg: #FFFFFF;
-  --lj-surface: #F6F8FA;
+  --lj-surface: #F4F7F5;
   /* ...19 tokens... */
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --lj-bg: #0B1220; /* ... */ }
+  :root:not([data-theme="light"]) { --lj-bg: #0A1210; /* ... */ }
 }
-:root[data-theme="dark"] { --lj-bg: #0B1220; /* ... */ }
+:root[data-theme="dark"] { --lj-bg: #0A1210; /* ... */ }
 ```
 
 Add `pnpm tokens:check` to CI beside `workflow:check` (`plan/08-cicd.md`): regenerate and fail if
 the result differs from what is committed. Same pattern, same reason.
 
-## 2. Wire Tailwind to the variables, not to hex
+## 2. Wire Tailwind to the variables
 
-```js
-// tailwind.config.js
-theme: {
-  extend: {
-    colors: {
-      bg: 'var(--lj-bg)',
-      surface: 'var(--lj-surface)',
-      raised: 'var(--lj-raised)',
-      border: 'var(--lj-border)',
-      'border-strong': 'var(--lj-border-strong)',
-      text: 'var(--lj-text)',
-      muted: 'var(--lj-muted)',
-      primary: { DEFAULT: 'var(--lj-primary)', hover: 'var(--lj-primary-hover)',
-                 fg: 'var(--lj-on-primary)', subtle: 'var(--lj-primary-subtle)' },
-      ok:   { DEFAULT: 'var(--lj-ok)',   subtle: 'var(--lj-ok-subtle)' },
-      warn: { DEFAULT: 'var(--lj-warn)', subtle: 'var(--lj-warn-subtle)' },
-      err:  { DEFAULT: 'var(--lj-err)',  subtle: 'var(--lj-err-subtle)' },
-      unknown: { DEFAULT: 'var(--lj-unknown)', subtle: 'var(--lj-unknown-subtle)' },
-    },
-  },
+Tailwind is on **v4** (`plan/01-architecture.md`), which is CSS-first. There is no
+`tailwind.config.js` - the theme is declared in CSS, which suits this token contract better than
+v3's JavaScript config ever did.
+
+```css
+/* apps/web/src/styles.css */
+@import "tailwindcss";
+@import "@lj/ui/tokens/_tokens.css";
+
+@theme inline {
+  /* Drop Tailwind's stock palette entirely, so bg-slate-100 does not exist. */
+  --color-*: initial;
+
+  --color-bg: var(--lj-bg);
+  --color-surface: var(--lj-surface);
+  --color-raised: var(--lj-raised);
+  --color-border: var(--lj-border);
+  --color-border-strong: var(--lj-border-strong);
+  --color-text: var(--lj-text);
+  --color-muted: var(--lj-muted);
+
+  --color-primary: var(--lj-primary);
+  --color-primary-hover: var(--lj-primary-hover);
+  --color-primary-fg: var(--lj-on-primary);
+  --color-primary-subtle: var(--lj-primary-subtle);
+
+  --color-ok: var(--lj-ok);
+  --color-ok-subtle: var(--lj-ok-subtle);
+  --color-warn: var(--lj-warn);
+  --color-warn-subtle: var(--lj-warn-subtle);
+  --color-err: var(--lj-err);
+  --color-err-subtle: var(--lj-err-subtle);
+  --color-unknown: var(--lj-unknown);
+  --color-unknown-subtle: var(--lj-unknown-subtle);
 }
 ```
 
-Because the values are variables rather than compiled colours, dark mode costs nothing at build
-time and there is no `dark:` variant to remember on every element.
+Three things this buys, all of which were awkward in v3:
 
-Ban raw colour utilities. `bg-slate-100` and `text-[#333]` are the leak that ends the token
-contract - forbid them with `tailwindcss/no-arbitrary-value` plus a lint rule on the default
-palette, and delete Tailwind's stock colours from the config so they cannot be reached.
+- **`@theme inline` is the correct directive here**, not plain `@theme`. `inline` makes the
+  utility reference `var(--lj-*)` at use site rather than resolving it once at build time, which
+  is what lets a single `bg-surface` class follow the colour scheme. Plain `@theme` would bake in
+  the light value and dark mode would silently do nothing.
+- **`--color-*: initial` deletes the stock palette.** `bg-slate-100` and `text-gray-500` stop
+  compiling, so the token contract cannot leak by accident. In v3 this needed a lint rule; in v4
+  it is one line and it fails at build.
+- **Dark mode costs nothing.** The variables already carry both schemes, so there is no `dark:`
+  variant to remember on every element.
+
+Still ban arbitrary values (`text-[#333]`) with `tailwindcss/no-arbitrary-value`. That is the one
+remaining way to reach a colour that is not in the contract.
 
 ## 3. Angular Material M3
 
@@ -125,7 +154,7 @@ Before submitting:
 
 ```bash
 python3 design/preview.py     # palette still passes contrast
-pnpm tokens:check             # generated SCSS matches tokens.json
+pnpm tokens:check             # generated CSS and SCSS match tokens.json
 ```
 
 Then by hand, four minutes total:
