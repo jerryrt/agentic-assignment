@@ -141,7 +141,30 @@ one.
 | `.gitignore` | platform | Every scope eventually wants a line in it - generated SQL, Playwright artefacts, a cache directory. Comment on the platform issue with the pattern and why. A missed pattern is how a credential reaches a public repository. |
 | `README.md` | nobody, until Phase 9 | It still holds the assignment brief. Phase 9 replaces it wholesale; until then an edit needs its own issue. Platform publishes its handoff to the issue thread, not here. |
 | `supabase/migrations/**` | see below | Append-only. |
+| `pnpm-lock.yaml` | nobody, and everybody | Any scope adding a dependency regenerates it. Never hand-merge it - see below. |
 | generated files | the generator's owner | Never hand-edit. Change the source and regenerate. |
+
+**The lockfile is regenerated, never merged.** `pnpm-lock.yaml` is the one contended file no
+scope can own, because every scope that adds a dependency must change it. In wave 2 four scopes
+run concurrently and all four will: `workflow` and `rules` may need none, but `contracts` adds
+Zod and `data` adds the Supabase client, and each `pnpm install` rewrites the file.
+
+Git cannot merge it usefully - it is generated, and a textual merge produces a lockfile matching
+no set of manifests. CI runs `pnpm install --frozen-lockfile`, which fails outright rather than
+repairing it, so a bad merge is caught but only after it has cost a run.
+
+The protocol is therefore mechanical, and it is the last thing a scope does before
+`status: ready-for-review`:
+
+1. Rebase onto `main`.
+2. If `pnpm-lock.yaml` conflicts, take `main`'s copy wholesale -
+   `git checkout --theirs pnpm-lock.yaml` during a rebase - and never resolve it by hand.
+3. Run `pnpm install` so the file is regenerated from the merged manifests.
+4. Commit it as its own commit, and name the dependency you added in the message.
+
+A dependency added to the catalog in `pnpm-workspace.yaml` follows the contended-file rule for
+that file instead: comment on the platform issue rather than editing it, because a catalog entry
+is a workspace-wide version decision and not a local one.
 
 **Migrations are append-only, one owner per file.** `contracts` owns the initial schema; any scope
 may add its own forward migration with a fresh timestamp. Two rules make that safe: never modify a
