@@ -12,3 +12,12 @@ dist/
 supabase/.temp/
 supabase/.branches/
 supabase/.env
+
+# Vercel CLI local state. `vercel env pull` writes a live copy of the project's
+# environment here, which on apps/api includes the service role key.
+.vercel/
+
+# Angular incremental compile scratch space. Deliberately not a turbo output.
+.angular/
+
+.env.*.local

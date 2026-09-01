@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+  - tooling/*
+
+# esbuild is a direct dependency of @angular/build and its postinstall fetches
+# the platform binary. pnpm 11 refuses dependency build scripts unless they are
+# named here, and a skipped build fails much later as an esbuild error that
+# says nothing about pnpm.
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,20 @@
+{
+  "name": "land-journey",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "db:reset": "supabase db reset"
+  },
+  "devDependencies": {
+    "turbo": "2.10.12",
+    "typescript": "6.0.3"
+  }
+}
