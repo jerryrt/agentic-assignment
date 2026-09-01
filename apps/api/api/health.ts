@@ -33,11 +33,11 @@ const SERVICE_NAME = 'lj-api';
 function readEnvironmentName(): string {
   // `||` and not `??`: Vercel injects an empty string for a system variable
   // the project has not enabled, and "" is as absent as undefined here.
-  return process.env.VERCEL_ENV || 'local';
+  return process.env['VERCEL_ENV'] || 'local';
 }
 
 function readCommitSha(): string {
-  return process.env.VERCEL_GIT_COMMIT_SHA || 'unknown';
+  return process.env['VERCEL_GIT_COMMIT_SHA'] || 'unknown';
 }
 
 export function GET(_request: Request): Response {

@@ -12,6 +12,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
-    "@lj/tsconfig": "workspace:*"
+    "@lj/tsconfig": "workspace:*",
+    "vitest": "catalog:"
   }
 }

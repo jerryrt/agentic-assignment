@@ -15,6 +15,7 @@
     "@lj/domain": "workspace:*"
   },
   "devDependencies": {
-    "@lj/tsconfig": "workspace:*"
+    "@lj/tsconfig": "workspace:*",
+    "vitest": "catalog:"
   }
 }

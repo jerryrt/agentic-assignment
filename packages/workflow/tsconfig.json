@@ -1,7 +1,7 @@
 {
   // Shared compiler options live once, in tooling/tsconfig; a package that
   // restates them drifts from the rest of the workspace without anyone noticing.
-  "extends": "@lj/tsconfig/node.json",
+  "extends": "@lj/tsconfig/base.json",
   // "test" is listed before it exists so that the first test file added by the
   // owning scope is typechecked without a tsconfig edit.
   "include": ["src", "test"]

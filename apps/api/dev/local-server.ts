@@ -62,7 +62,7 @@ const server = createServer((incoming, outgoing) => {
   });
 });
 
-const port = Number(process.env.PORT ?? DEFAULT_PORT);
+const port = Number(process.env['PORT'] ?? DEFAULT_PORT);
 
 server.listen(port, () => {
   console.log(`lj-api listening on http://localhost:${port}${HEALTH_PATH}`);

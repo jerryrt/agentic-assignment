@@ -14,7 +14,7 @@
   },
   "devDependencies": {
     "@lj/tsconfig": "workspace:*",
-    "@types/node": "24.13.3",
-    "vitest": "4.1.11"
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
   }
 }
