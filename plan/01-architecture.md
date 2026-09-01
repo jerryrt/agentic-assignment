@@ -132,6 +132,14 @@ Note `env` on `build`: Turbo hashes those into the cache key, so a changed Supab
 correctly busts the cache instead of serving a stale bundle. This is the classic monorepo
 footgun and is worth mentioning in the interview.
 
+**That list is also the enforcement point for the service role key.** Turbo 2 defaults to strict
+env mode: a task sees only the variables its entry declares, and everything else arrives blank.
+`SUPABASE_SERVICE_ROLE_KEY` is deliberately absent, so a stray `process.env.SUPABASE_SERVICE_ROLE_KEY`
+anywhere under `apps/web` reads empty at build time rather than baking a live key into a browser
+bundle. The API reads the key from the serverless runtime at request time, not from the build, so
+nothing needs it here. Never add it to this array - doing so silently removes the guard that
+`../CLAUDE.md` (**Security baseline**) is relying on, and no test would fail.
+
 ## "Vercel builds only what changed"
 
 The brief names this explicitly, so it must actually work and be demonstrable.
