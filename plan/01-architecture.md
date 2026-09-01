@@ -108,6 +108,39 @@ is worth knowing before Phase 0 rather than during it.
   `dependencies` is invisible to Turbo, which will then order the two tasks wrongly and let
   `turbo-ignore` cancel a Vercel build that should have run.
 
+### Three pnpm 11 defaults that change what Phase 0 must write
+
+pnpm 11 moved configuration and tightened supply-chain defaults. All three below were confirmed
+against the changelog shipped inside `pnpm@11.25.0`, not recalled.
+
+**Settings live in `pnpm-workspace.yaml`, not `.npmrc`.** pnpm 11 reads only auth and registry
+settings from `.npmrc`; `nodeLinker`, `hoistPattern`, `shamefullyHoist` and the rest must be set in
+`pnpm-workspace.yaml` or the global config. An `.npmrc` entry for one of them is not an error and
+not a warning - it is silently ignored, which is worse. The default isolated `node_modules` is
+what this repo wants anyway, so the correct amount of configuration here is none; the trap is only
+for someone reaching for a blog post's `.npmrc` fix.
+
+**`strictDepBuilds` defaults to `true`.** No dependency may run an install script unless
+`pnpm-workspace.yaml` names it under `allowBuilds` (the pnpm 10 keys `onlyBuiltDependencies` and
+`neverBuiltDependencies` were replaced and are now ignored). This bites immediately:
+`@angular/build` depends directly on `esbuild`, whose `postinstall` fetches the platform binary.
+A skipped build does not fail `pnpm install` - it fails later, as an esbuild error that says
+nothing about pnpm. `allowBuilds` must list `esbuild`, plus anything `pnpm approve-builds` reports.
+
+**`minimumReleaseAge` defaults to 24 hours, and loose mode rewrites the workspace file.** A version
+published less than a day ago is refused; in the default loose mode pnpm adds it to
+`minimumReleaseAgeExclude` in `pnpm-workspace.yaml` and proceeds, printing one info line. So the
+first `pnpm install` can modify a committed file, and `pnpm install --frozen-lockfile` in CI
+re-validates the lockfile against the same policy and aborts with
+`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` if those exclusions were never committed.
+
+**Commit the exclusions pnpm writes; do not set `minimumReleaseAge: 0`.** Turning the guard off
+repo-wide to silence one install trades a supply-chain property for convenience, which is the
+trade `../CLAUDE.md` (**Priority order**) refuses. An explicit, reviewable list of exempted
+packages keeps the protection for everything else and leaves an audit trail of what was waived and
+when. The exemptions are self-expiring in effect: re-resolve after a day and they are no longer
+needed.
+
 ## turbo.json
 
 ```jsonc
