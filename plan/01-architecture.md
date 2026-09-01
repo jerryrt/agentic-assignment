@@ -65,10 +65,11 @@ number. Verified against the npm registry and the Actions marketplace on 2026-09
 | Node | `24.20.0` (Active LTS, "Krypton") | Angular 22's engines accept `^22.22.3 \|\| ^24.15.0 \|\| >=26.0.0`. 26 is Current, not LTS; CI pins LTS. |
 | pnpm | `11.25.0` | Workspaces, strict `node_modules`. |
 | Turborepo | `2.10.12` | `turbo.json` uses the v2 `tasks` key, not the v1 `pipeline` key. |
-| Angular | `22.1.6` CLI / `22.1.4` core | Fixed by the brief. |
+| Angular | `22.1.6` CLI / `22.1.4` core | Fixed by the brief. The CLI and the framework version independently; `@angular/compiler-cli` tracks core, and `22.1.6` of it does not exist. |
 | Angular Material + CDK | `22.1.4` | Must match `@angular/core` exactly, not by caret. |
 | **TypeScript** | **`6.0.3`** | **Not `latest`.** See the warning below. |
 | Tailwind CSS | `4.3.3` | v4 is CSS-first. There is no `tailwind.config.js`. |
+| `@tailwindcss/postcss` + `postcss` | `4.3.3` / `^8.4.0` | Tailwind v4 does nothing without the PostCSS plugin and a `.postcssrc.json` declaring it. `ng add tailwindcss` installs and wires all three; assembling it by hand and omitting them produces a stylesheet that silently emits no Tailwind CSS and no error. |
 | Zod | `4.5.4` | |
 | Vitest | `4.1.11` | |
 | `@supabase/supabase-js` | `2.112.4` | |
