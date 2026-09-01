@@ -12,6 +12,8 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
+    "workflow:gen": "pnpm --filter @lj/workflow run gen",
+    "workflow:check": "pnpm --filter @lj/workflow run gen:check",
     "db:reset": "supabase db reset"
   },
   "devDependencies": {
