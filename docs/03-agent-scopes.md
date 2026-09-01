@@ -10,8 +10,9 @@ other's files, which is what makes concurrent work safe rather than merely fast.
 
 ## The twelve scopes
 
-Estimates are from `../plan/09-build-order.md`. "Must not touch" is the load-bearing column - it is
-what an agent reads before its first edit.
+Estimates come from [`../plan/09-build-order.md`](../plan/09-build-order.md), which owns them;
+they are repeated here only as a schedule input. "Must not touch" is the load-bearing column - it
+is what an agent reads before its first edit.
 
 | # | Scope | Owns | Must not touch | Waits for | Est |
 |---|---|---|---|---|---|
@@ -83,11 +84,13 @@ Twelve scopes does not mean twelve agents. The useful measure is the peak width 
 | 2 | workflow, rules, design-system, data | 1.5 h |
 | 3 | api, web-core | 1.0 h |
 | 4 | feature-apply, feature-documents, feature-servicing | 2.5 h |
-| 5 | qa (tail; starts inside wave 4) | 1.0 h |
+| 5 | qa (harness lands in wave 3; the suite is the tail) | 1.0 h |
+| 6 | submission | 1.0 h |
 
-**About 15.75 hours of work compresses to about 8 hours of wall time, at a peak of four
-concurrent agents.** That is a speed-up of roughly 1.9x, not 12x, and the ceiling is the serial
-spine: platform, then contracts, then core, then the largest feature.
+**The 16.75 hours in [`../plan/09-build-order.md`](../plan/09-build-order.md) compress to about 9
+hours of wall time, at a peak of four concurrent agents.** That is a speed-up of roughly 1.9x, not
+12x, and the ceiling is the serial spine: platform, then contracts, then core, then the largest
+feature, then submission.
 
 Three consequences worth acting on:
 

@@ -32,8 +32,10 @@ jobs:
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo lint typecheck test build --filter=...[origin/main^]
-      - name: workflow definition parity
-        run: pnpm workflow:check    # generated SQL still matches the TS machines
+      - name: generated artefacts still match their sources
+        run: |
+          pnpm workflow:check   # generated SQL still matches the TS machines
+          pnpm tokens:check     # generated CSS/SCSS still matches tokens.json
 
   migrate:
     needs: verify
@@ -62,12 +64,17 @@ Three details worth defending:
   typechecked, tested and built. Combined with remote cache, a README-only PR finishes in seconds.
 - `fetch-depth: 0` - without full history the filter silently degrades to "everything." A common
   and invisible misconfiguration.
-- `workflow:check` - regenerates the transition SQL and fails if it differs from what is checked
-  in. This is the CI job that keeps the TS machine and the Postgres trigger from drifting (`03`).
+- `workflow:check` and `tokens:check` - regenerate the transition SQL and the token stylesheets,
+  and fail if either differs from what is committed. These are what keep the TS machine and the
+  Postgres trigger from drifting ([`03-workflow-engine.md`](03-workflow-engine.md)), and the
+  palette from drifting out of the swatches
+  ([`../design/02-implementation.md`](../design/02-implementation.md)). A generated file is only
+  trustworthy if something checks it.
 
 ## Vercel
 
-Two projects, both with Root Directory set and Ignored Build Step `npx turbo-ignore --fallback=HEAD^1`
+Two projects, both with Root Directory set and Ignored Build Step
+`npx turbo-ignore --fallback=HEAD^1`
 (see `01`). Environment variables:
 
 | Variable | Scope | Notes |
