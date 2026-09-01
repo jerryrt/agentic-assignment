@@ -1,0 +1,33 @@
+packages:
+  - apps/*
+  - packages/*
+  - tooling/*
+
+# A version declared here is written once and referenced as "catalog:" from
+# every manifest that needs it. pnpm's isolated node_modules means a package
+# must declare a tool to run it, so without a catalog the same version would be
+# repeated in seven manifests and drift the first time one is bumped alone.
+catalog:
+  vitest: 4.1.11
+  '@types/node': 24.13.3
+
+# pnpm 11 refuses to run a dependency's install script unless it is named here.
+# The decision is recorded per package rather than waived globally, because a
+# postinstall script is arbitrary code running at install time.
+allowBuilds:
+  # Fetches the platform binary @angular/build compiles with. Nothing works
+  # without it, and the failure appears much later as an esbuild error that
+  # says nothing about pnpm.
+  esbuild: true
+  # Pulled in by eslint-import-resolver-typescript. Its platform bindings ship
+  # as optionalDependencies so resolution survives a skipped build, but the
+  # install warns until it is named.
+  unrs-resolver: true
+  # The three below are optional native accelerators in the Angular CLI's tree:
+  # a faster file watcher and the persistent disk cache. Each has a JavaScript
+  # fallback, so declining them costs build speed and nothing else. Declining is
+  # the cheaper side of the trade -- three fewer install scripts running
+  # arbitrary code -- and it is revisited only if a build actually needs them.
+  '@parcel/watcher': false
+  lmdb: false
+  msgpackr-extract: false

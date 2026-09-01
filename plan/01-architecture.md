@@ -72,6 +72,7 @@ number. Verified against the npm registry and the Actions marketplace on 2026-09
 | `@tailwindcss/postcss` + `postcss` | `4.3.3` / `^8.4.0` | Tailwind v4 does nothing without the PostCSS plugin and a `.postcssrc.json` declaring it. `ng add tailwindcss` installs and wires all three; assembling it by hand and omitting them produces a stylesheet that silently emits no Tailwind CSS and no error. |
 | Zod | `4.5.4` | |
 | Vitest | `4.1.11` | |
+| ESLint | `10.9.1` | Flat config. `eslint-plugin-import` peaks at `eslint ^9`, so the layering rule uses `eslint-plugin-import-x`. The plugin set is pinned in `tooling/eslint-config/package.json`, which is the manifest that consumes it. |
 | `@supabase/supabase-js` | `2.112.4` | |
 | Supabase CLI | `2.116.0` | Runs the local stack in Docker. |
 | Vercel CLI | `59.11.0` | Only needed to publish. |
