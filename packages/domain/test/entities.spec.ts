@@ -4,6 +4,7 @@ import {
   APP_ROLES,
   AppRoleSchema,
   ApplicationBorrowerViewSchema,
+  ApplicationDecisionSchema,
   ApplicationLenderViewSchema,
   ApplicationSchema,
   ApplicationStateSchema,
@@ -171,10 +172,58 @@ describe('application and its two projections', () => {
       ...borrowerRow,
       decision_note: 'thin margins',
       risk_grade: 'C',
+      decided_by: BORROWER_ID,
+      recorded_at: NOW,
       borrower_name: 'A Borrower',
       open_doc_count: 2,
     };
     expect(ApplicationLenderViewSchema.parse(lenderRow)).toEqual(lenderRow);
+  });
+
+  // The view left-joins application_decision, so every column it contributes
+  // arrives null for an application nobody has decided yet -- which is every
+  // row in the queue that still needs work.  recorded_at is `not null` on the
+  // table and nullable here for exactly that reason.
+  it('reads the whole decision half as null when no decision row exists', () => {
+    const lenderRow = {
+      ...borrowerRow,
+      decision_note: null,
+      risk_grade: null,
+      decided_by: null,
+      recorded_at: null,
+      borrower_name: 'A Borrower',
+      open_doc_count: 0,
+    };
+    const parsed = ApplicationLenderViewSchema.parse(lenderRow);
+    expect(parsed.decided_by).toBeNull();
+    expect(parsed.recorded_at).toBeNull();
+  });
+
+  // Zod strips what it does not declare, so a column the view projects and
+  // this schema omits is silent data loss rather than an error.  Naming the
+  // projection here is what makes the omission loud.
+  it('declares every column application_lender_v projects', () => {
+    expect(Object.keys(ApplicationLenderViewSchema.shape).sort()).toEqual(
+      [
+        'borrower_id',
+        'borrower_name',
+        'created_at',
+        'data',
+        'decided_at',
+        'decided_by',
+        'decision_note',
+        'furthest_step',
+        'id',
+        'open_doc_count',
+        'org_id',
+        'recorded_at',
+        'revision',
+        'risk_grade',
+        'state',
+        'submitted_at',
+        'updated_at',
+      ].sort(),
+    );
   });
 
   // open_doc_count counts document_slot rows, and that table arrives with the
@@ -186,6 +235,8 @@ describe('application and its two projections', () => {
       ...borrowerRow,
       decision_note: null,
       risk_grade: null,
+      decided_by: null,
+      recorded_at: null,
       borrower_name: 'A Borrower',
     };
     expect(ApplicationLenderViewSchema.parse(lenderRow).open_doc_count).toBeNull();
@@ -196,6 +247,8 @@ describe('application and its two projections', () => {
       ...borrowerRow,
       decision_note: null,
       risk_grade: null,
+      decided_by: null,
+      recorded_at: null,
       borrower_name: 'A Borrower',
       open_doc_count: -1,
     };
@@ -210,9 +263,71 @@ describe('application and its two projections', () => {
     expect(ApplicationBorrowerViewSchema.safeParse({ ...borrowerRow, revision: -1 }).success).toBe(false);
   });
 
-  it('parses the full server-side row', () => {
-    const full = { ...borrowerRow, decision_note: null, risk_grade: null };
-    expect(ApplicationSchema.parse(full)).toEqual(full);
+  // Regression.  decision_note and risk_grade were columns on application and
+  // are now a table of their own, because row-level security filters rows and
+  // never columns.  The schema kept declaring them as `.nullable()`, which is
+  // not `.optional()`, so every row read straight off the base table failed to
+  // parse with "expected string, received undefined".
+  it('parses a base-table row, which no longer carries the decision fields', () => {
+    expect(ApplicationSchema.parse(borrowerRow)).toEqual(borrowerRow);
+  });
+
+  // decided_at stays on application deliberately: that a decision happened is
+  // a fact the borrower is entitled to, and only the reasoning is lender-only.
+  it('keeps decided_at on the base table', () => {
+    const decided = { ...borrowerRow, state: 'approved', decided_at: NOW };
+    expect(ApplicationSchema.parse(decided).decided_at).toBe(NOW);
+  });
+
+  it('strips a decision field that reached it from somewhere else', () => {
+    const parsed = ApplicationSchema.parse({ ...borrowerRow, decision_note: 'thin margins' });
+    expect(parsed).not.toHaveProperty('decision_note');
+  });
+});
+
+describe('application decision', () => {
+  const decision = {
+    application_id: APPLICATION_ID,
+    decision_note: 'thin margins on the 2025 return',
+    risk_grade: 'C',
+    decided_by: BORROWER_ID,
+    recorded_at: NOW,
+  };
+
+  it('parses a row', () => {
+    expect(ApplicationDecisionSchema.parse(decision)).toEqual(decision);
+  });
+
+  // One row per application, so the primary key is the foreign key.
+  it('is keyed by the application it belongs to', () => {
+    const { application_id: _id, ...withoutKey } = decision;
+    expect(ApplicationDecisionSchema.safeParse(withoutKey).success).toBe(false);
+  });
+
+  it('allows a grade without a note, and a note without a grade', () => {
+    expect(ApplicationDecisionSchema.parse({ ...decision, decision_note: null }).risk_grade).toBe('C');
+    expect(ApplicationDecisionSchema.parse({ ...decision, risk_grade: null }).decision_note).toBe(
+      decision.decision_note,
+    );
+  });
+
+  // decided_by is nullable in the table: a decision recorded by a job rather
+  // than by a person has no profile to point at.
+  it('allows a null decided_by', () => {
+    expect(ApplicationDecisionSchema.parse({ ...decision, decided_by: null }).decided_by).toBeNull();
+  });
+
+  it('requires recorded_at, which the table declares not null', () => {
+    const { recorded_at: _at, ...withoutTimestamp } = decision;
+    expect(ApplicationDecisionSchema.safeParse(withoutTimestamp).success).toBe(false);
+  });
+
+  // The timestamp here is recorded_at and not a second decided_at, and the
+  // difference is load bearing: this is when the internal note was written,
+  // which stops being the decision instant the first time a note is amended.
+  it('names its timestamp recorded_at, not decided_at', () => {
+    expect(Object.keys(ApplicationDecisionSchema.shape)).toContain('recorded_at');
+    expect(Object.keys(ApplicationDecisionSchema.shape)).not.toContain('decided_at');
   });
 });
 
