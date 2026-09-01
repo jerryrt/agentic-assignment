@@ -11,6 +11,9 @@
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests"
   },
+  "dependencies": {
+    "zod": "4.5.4"
+  },
   "devDependencies": {
     "@lj/tsconfig": "workspace:*",
     "vitest": "catalog:"
