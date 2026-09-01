@@ -92,8 +92,10 @@ thread and against `git log` first.
 This is what makes parallel work safe, and it is the practical reason the layering rule
 exists.
 
-- **Every issue names the paths it owns**, in its body. An agent edits only those paths. If the
-  issue does not name them, add them and say so before starting.
+- **Every issue names the paths it owns**, in its body, and the paths it must not touch. An agent
+  edits only the former. If the issue names neither, add both and say so before starting. The
+  worked partition - twelve scopes, their dependencies, and the contended-file protocols - is in
+  `docs/03-agent-scopes.md`.
 - Independent by construction: `packages/workflow`, `packages/rules`, and each feature under
   `apps/web/features/` do not share files, so they proceed concurrently.
 - **Contended files** are the shared contracts: `packages/domain`, `design/tokens.json`,
