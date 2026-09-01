@@ -11,7 +11,7 @@ contrast report and the running app all read the same numbers - the no-duplicati
 ```
 packages/ui/
   tokens/
-    tokens.json          <- copied from design/ once a theme is picked, trimmed to that theme
+    tokens.json          <- copied from design/, single theme
     emit.ts              <- writes _tokens.scss
     _tokens.scss         <- GENERATED, checked in, never hand-edited
 ```
@@ -135,11 +135,13 @@ Then by hand, four minutes total:
 3. Tab through one full application step without touching the mouse.
 4. Zoom the browser to 200% and confirm the lender queue still works.
 
-## 6. After picking
+## 6. Housekeeping (done)
 
-Delete the three theme guides you did not choose, and trim `tokens.json` to the single chosen
-theme. Keeping four palettes in the repo invites a component to reference the wrong one, and the
-assignment is assessed on the codebase someone else has to work in.
+The theme was chosen on 2026-09-01 and the folder was trimmed the same day: the three rejected
+guides and their previews were removed and `tokens.json` now holds one theme. Four palettes in a
+repo invites a component to reference the wrong one, and the assignment is assessed on the
+codebase someone else has to work in.
 
-Keep `preview.py` and the chosen theme's SVG - the preview is worth linking from the submission
-README as evidence the palette was designed rather than picked from a component library default.
+Link `preview/fieldwork.svg` from the submission README. It is evidence the palette was designed
+and verified rather than taken from a component library default, which is worth more than the
+screenshot it costs.

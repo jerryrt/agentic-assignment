@@ -22,4 +22,5 @@ Engineering conventions for this repo live in `../CLAUDE.md`.
 
 Start at `09-build-order.md` Phase 0 when writing code.
 
-Visual design candidates live in `../design/`; pick one before starting Phase 4.
+Visual design lives in `../design/`. The theme is Fieldwork; read `../design/00-foundations.md`
+before building any screen.

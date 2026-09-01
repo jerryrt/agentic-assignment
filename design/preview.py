@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the SVG palette previews and the WCAG contrast report from tokens.json.
+"""Generate the SVG palette preview and the WCAG contrast report from tokens.json.
 
-The guides embed the SVGs this emits, so the swatches shown on GitHub and the hex
-values in tokens.json cannot drift. Run after editing tokens.json:
+The guide embeds the SVG this emits, so the swatches shown on GitHub and the hex
+values in tokens.json cannot drift. Exits non-zero on a failing colour pair, which
+is what makes it usable as a CI gate. Run after editing tokens.json:
 
     python3 design/preview.py
 """
@@ -14,6 +15,37 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 SANS = "system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
 MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
 CHIPS = ["primary", "ok", "warn", "err", "unknown", "border-strong", "text"]
+
+GUIDE = "01-theme.md"
+BEGIN = "<!-- BEGIN GENERATED TOKENS - edit tokens.json, then run preview.py -->"
+END = "<!-- END GENERATED TOKENS -->"
+
+ORDER = ["bg", "surface", "raised", "border", "border-strong", "text", "muted",
+         "primary", "primary-hover", "on-primary", "primary-subtle",
+         "ok", "ok-subtle", "warn", "warn-subtle", "err", "err-subtle",
+         "unknown", "unknown-subtle"]
+
+ROLE = {
+    "bg": "Page ground. The only thing behind everything else.",
+    "surface": "Recessed panels: the rule-list card, the form step body.",
+    "raised": "Cards sitting on a surface: a product row, a document slot.",
+    "border": "Decorative separators. Low contrast on purpose.",
+    "border-strong": "Real affordances: input outlines, outlined buttons. 3:1 minimum.",
+    "text": "Primary copy.",
+    "muted": "Secondary copy, labels, helper text. Never below 4.5:1.",
+    "primary": "Primary action, active nav, focus ring, links.",
+    "primary-hover": "Hover and pressed state for primary.",
+    "on-primary": "Text and icons sitting on primary.",
+    "primary-subtle": "Selected rows, active step, primary-tinted banners.",
+    "ok": "RuleResult status 'pass'. Also an accepted document slot.",
+    "ok-subtle": "Background for a pass pill or banner.",
+    "warn": "Advisory severity: a consistency gap that does not block.",
+    "warn-subtle": "Background for a warning pill or banner.",
+    "err": "Blocking severity: a failed guard, a rejected document.",
+    "err-subtle": "Background for an error pill or banner.",
+    "unknown": "RuleResult status 'unknown' - not enough entered yet.",
+    "unknown-subtle": "Background for the 'more info needed' pill.",
+}
 
 
 def _linear(c):
@@ -140,18 +172,37 @@ def report(key, theme):
     return failures
 
 
+def write_token_table(theme):
+    """Rewrite the generated block in the theme guide so it cannot drift."""
+    path = os.path.join(ROOT, GUIDE)
+    if not os.path.exists(path):
+        return None
+    L, K = theme["light"], theme["dark"]
+    rows = ["| Token | Light | Dark | Role |", "|---|---|---|---|"]
+    rows += [f"| `--lj-{t}` | `{L[t]}` | `{K[t]}` | {ROLE[t]} |" for t in ORDER]
+    doc = open(path).read()
+    head, _, rest = doc.partition(BEGIN)
+    _, _, tail = rest.partition(END)
+    if not rest or not tail:
+        raise SystemExit(f"{GUIDE}: generated token block markers are missing")
+    open(path, "w").write(head + BEGIN + "\n\n" + "\n".join(rows) + "\n\n" + END + tail)
+    return path
+
+
 def main():
-    data = json.load(open(os.path.join(ROOT, "tokens.json")))
-    all_failures = []
-    for key, theme in data["themes"].items():
-        path = build(key, theme)
-        all_failures += report(key, theme)
-        print(f"wrote {os.path.relpath(path, os.path.dirname(ROOT))}")
-    if all_failures:
+    theme = json.load(open(os.path.join(ROOT, "tokens.json")))["theme"]
+    key = theme["name"].lower()
+    path = build(key, theme)
+    print(f"wrote {os.path.relpath(path, os.path.dirname(ROOT))}")
+    guide = write_token_table(theme)
+    if guide:
+        print(f"wrote {os.path.relpath(guide, os.path.dirname(ROOT))} (token table)")
+    failures = report(key, theme)
+    if failures:
         print("\ncontrast failures:")
-        print("\n".join(all_failures))
+        print("\n".join(failures))
         return 1
-    print("\ncontrast: all pairs pass (text 4.5:1, UI 3:1) in both modes")
+    print("contrast: all pairs pass (text 4.5:1, UI 3:1) in both modes")
     return 0
 
 
