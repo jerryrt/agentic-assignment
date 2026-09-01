@@ -62,7 +62,7 @@ number. Verified against the npm registry and the Actions marketplace on 2026-09
 
 | Tool | Pin | Why this one |
 |---|---|---|
-| Node | `24.20.0` (Active LTS, "Krypton") | Angular 22's engines accept `^22.22.3 \|\| ^24.15.0 \|\| >=26.0.0`. 26 is Current, not LTS; CI pins LTS. |
+| Node | `24.20.0` (Active LTS, "Krypton") | Angular 22's engines accept `^22.22.3 \|\| ^24.15.0 \|\| >=26.0.0`. 26 is Current, not LTS; CI pins LTS. Held in `.node-version`, which local tooling and `setup-node` read. Vercel does not read it - see below. |
 | pnpm | `11.25.0` | Workspaces, strict `node_modules`. |
 | Turborepo | `2.10.12` | `turbo.json` uses the v2 `tasks` key, not the v1 `pipeline` key. |
 | Angular | `22.1.6` CLI / `22.1.4` core | Fixed by the brief. The CLI and the framework version independently; `@angular/compiler-cli` tracks core, and `22.1.6` of it does not exist. |
@@ -191,6 +191,23 @@ successful deploy's SHA and this one. Editing `packages/rules` rebuilds both app
 
 **Demonstrate it in the submission README** with two commits and two screenshots of the Vercel
 log ("Build cancelled -- no changes detected"). An unproven claim here is worth nothing.
+
+`turbo-ignore` still ships in lockstep with Turborepo and works as described, but Turborepo's own
+documentation now points at `turbo query affected` as its replacement. Nothing needs to change for
+this build; it is worth knowing before someone reads the deprecation notice and assumes the
+pipeline is misconfigured.
+
+### Vercel does not read `.node-version`
+
+The Node version Vercel builds and runs a function with comes from the project's dashboard setting
+or from `engines.node` in the app's `package.json`, at major-version granularity only - `24.x`, not
+`24.20.0`. `.node-version` governs local tooling and CI and has no effect on the deployed runtime.
+Both apps today run 24.x because that is Vercel's current platform default, which is a coincidence,
+not a declaration.
+
+**Declare `"engines": { "node": "24.x" }` in `apps/web/package.json` and `apps/api/package.json`.**
+Without it, a change to Vercel's default silently moves production to a different major than the
+one every test ran under, and nothing in the build output connects the two.
 
 **Remote cache is deliberately not used.** The brief fixes Turborepo and requires that Vercel
 build only what changed; it never mentions caching, and no assessment criterion touches it.
