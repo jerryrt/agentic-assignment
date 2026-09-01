@@ -28,15 +28,28 @@ agentic-assignment/
 
 **Dependency direction is strictly one way:**
 
+```mermaid
+graph TD
+    web["apps/web"] --> ui["packages/ui"]
+    web --> workflow["packages/workflow"]
+    web --> rules["packages/rules"]
+    web --> db["packages/db"]
+    api["apps/api"] --> workflow
+    api --> rules
+    api --> db
+    db --> domain["packages/domain"]
+    ui --> domain
+    workflow --> domain
+    rules --> domain
+
+    classDef pure fill:#DFF0F1,stroke:#0B6A6E,color:#0F1D16
+    classDef delivery fill:#F4F7F5,stroke:#849A8D,color:#0F1D16
+    class domain,workflow,rules pure
+    class web,api,ui,db delivery
 ```
-domain  <-  workflow
-   ^          ^
-   +-- rules -+
-        ^
-   db --+-- apps/api --+
-                       +---> (both consume domain/workflow/rules)
-   ui ---- apps/web ---+
-```
+
+An arrow reads "depends on". Nothing points upward, and `packages/domain` depends on nothing.
+The tinted nodes are the pure layer.
 
 `domain`, `workflow`, and `rules` are **pure TypeScript with no I/O and no framework imports.**
 That is what lets the browser and the serverless function run byte-identical logic -- the client

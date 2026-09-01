@@ -5,20 +5,29 @@
 Everything hangs off one aggregate: the **loan file**. Option 2 creates it, Option 1 fills its
 document pack, Option 3 services it after funding.
 
+```mermaid
+erDiagram
+    ORGANISATION ||--o{ LOAN_PRODUCT : "defines criteria and required docs"
+    ORGANISATION ||--o{ APPLICATION : receives
+    PROFILE ||--o{ APPLICATION : submits
+    APPLICATION ||--o{ DOCUMENT_SLOT : "requires (option 1)"
+    DOCUMENT_SLOT ||--o{ DOCUMENT_UPLOAD : "holds files for"
+    APPLICATION ||--o{ ELIGIBILITY_SNAPSHOT : "recorded at submit (option 2)"
+    APPLICATION ||--o| LOAN : "created on funding (option 3)"
+    LOAN ||--o{ LEDGER_ENTRY : "balance derived from"
+    LOAN ||--o{ CREDIT_RELEASE : "drawn against"
+    CREDIT_RELEASE ||--o{ LEDGER_ENTRY : "posts on disburse"
 ```
-organisation (lender)
-   +-- loan_product          eligibility criteria + required document set
-borrower (auth.users -> profile)
-   +-- application           <- the aggregate root, carries workflow_state
-         +-- application_data          JSONB, the multi-step form payload  (Opt 2)
-         +-- document_slot[]           required-doc checklist + state       (Opt 1)
-         |     +-- document_upload[]   files + extracted fields
-         +-- eligibility_snapshot[]    rule results at a point in time      (Opt 2)
-         +-- loan                      created on funding                   (Opt 3)
-               +-- ledger_entry[]      draws, repayments -> balance
-               +-- credit_release[]    its own state machine                (Opt 3)
-workflow_event                          append-only log for every machine
-```
+
+`APPLICATION` is the aggregate root and carries the workflow state. Option 2 creates it, option 1
+fills its document pack, option 3 begins at `LOAN`. `application.data` (the multi-step form
+payload) is a JSONB column on `APPLICATION`, not a table.
+
+`WORKFLOW_EVENT` is deliberately outside this diagram: it references
+`(machine, subject_id)` rather than a foreign key, because one append-only log serves all three
+machines. That is a trade - no referential integrity on `subject_id` - taken so the event log,
+the audit trail and the timeline component stay single implementations.
+
 
 ## Schema sketch
 

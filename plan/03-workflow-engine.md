@@ -16,19 +16,24 @@ Three machines, one engine. Definitions live in `packages/workflow/src/machines/
 
 ### `application` (Option 2 -> Option 1 -> funding)
 
-```
-draft --submit--> submitted --request_docs--> docs_pending
-                                                   |
-                              +--------------------+ (pack complete)
-                              v
-                         under_review --+--approve--> approved --fund--> funded
-                                        +--decline--> declined
-                                        +--request_info--> needs_borrower_action
-                                                                |
-                                        +--resubmit--------------+
-                                        |  (back to under_review)
-                                        v
-withdrawn <--withdraw-- {draft, submitted, docs_pending, needs_borrower_action}
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> submitted : submit (borrower)
+    submitted --> docs_pending : request_docs (lender)
+    docs_pending --> under_review : begin_review (lender) - guard, pack complete
+    under_review --> approved : approve (lender)
+    under_review --> declined : decline (lender)
+    under_review --> needs_borrower_action : request_info (lender)
+    needs_borrower_action --> under_review : resubmit (borrower)
+    approved --> funded : fund (lender) - effect, create loan
+    draft --> withdrawn : withdraw (borrower)
+    submitted --> withdrawn : withdraw (borrower)
+    docs_pending --> withdrawn : withdraw (borrower)
+    needs_borrower_action --> withdrawn : withdraw (borrower)
+    funded --> [*]
+    declined --> [*]
+    withdrawn --> [*]
 ```
 
 `funded` is terminal for this machine and is the **hand-off point**: funding creates a `loan`
@@ -36,10 +41,23 @@ row, and Option 3's machines take over. Two machines, one seam -- not one sprawl
 
 ### `document_slot` (Option 1) -- per required document, not per file
 
-```
-required --upload--> uploaded --extract--> extracted --+--accept--> accepted
-                        ^                              +--reject--> rejected
-                        +------------ replace --------------+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> required
+    required --> uploaded : upload (borrower)
+    uploaded --> extracted : extract (system)
+    extracted --> accepted : accept (lender)
+    extracted --> rejected : reject (lender)
+    rejected --> uploaded : replace (borrower)
+    accepted --> uploaded : replace (borrower)
+    accepted --> [*]
+
+    note right of accepted
+        expired is NOT a state.
+        It is derived from valid_until
+        and the clock, in packages/rules.
+    end note
 ```
 
 **`expired` is deliberately not a state.** Expiry is a function of `valid_until` and the clock:
@@ -49,10 +67,19 @@ interview -- it is the difference between modelling and hand-waving.
 
 ### `credit_release` (Option 3)
 
-```
-draft --submit--> submitted --begin_review--> under_review --+--approve--> approved --disburse--> funded
-                     |                             |         +--decline--> declined
-                     +---- cancel -----------------+--> cancelled   (borrower only)
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> submitted : submit (borrower) - guard, within available credit
+    submitted --> under_review : begin_review (lender)
+    under_review --> approved : approve (lender)
+    under_review --> declined : decline (lender)
+    approved --> funded : disburse (lender) - effect, post ledger entry
+    submitted --> cancelled : cancel (borrower)
+    under_review --> cancelled : cancel (borrower)
+    funded --> [*]
+    declined --> [*]
+    cancelled --> [*]
 ```
 
 ## 2. What transitions are legal
@@ -134,20 +161,35 @@ system, braces in the database, generated from one definition so they cannot dri
 
 **The server. Always.** The client holds a *prediction*, never the truth.
 
-```
-POST /api/transition
-  { machine, subjectId, event, revision, payload }
-  --> load subject + build guard context (one query per machine)
-      run engine.can(machine, state, event, role, ctx)
-      if !ok -> 422 { reason, blockers: RuleResult[] }
-      BEGIN
-        UPDATE <table> SET state=$to, revision=revision+1, updated_at=now()
-          WHERE id=$id AND revision=$expected      -- optimistic lock
-        if rowcount = 0 -> 409 { current: <refetched> }
-        INSERT INTO workflow_event (...)           -- append-only
-        run effects (create_loan, post_ledger_entry, ...) in the same tx
-      COMMIT
-  --> 200 { state, revision, events }
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Browser
+    participant A as apps/api
+    participant E as packages/workflow
+    participant P as Postgres
+
+    C->>A: POST /api/transition (machine, subjectId, event, revision)
+    A->>P: load subject and build guard context
+    A->>E: can(machine, state, event, role, ctx)
+
+    alt guard refuses
+        E-->>A: ok false, blockers RuleResult[]
+        A-->>C: 422 with blockers
+    else transition is legal
+        A->>P: BEGIN
+        A->>P: UPDATE subject SET state, revision+1 WHERE revision = expected
+        Note over P: BEFORE UPDATE trigger rejects any<br/>state pair absent from workflow_transition
+        alt zero rows updated
+            A->>P: ROLLBACK
+            A-->>C: 409 with the refetched current state
+        else one row updated
+            A->>P: INSERT INTO workflow_event
+            A->>P: run declared effects
+            A->>P: COMMIT
+            A-->>C: 200 (state, revision, events)
+        end
+    end
 ```
 
 The **event log is the audit trail and the explanation**: "Submitted 14 Aug | Docs requested

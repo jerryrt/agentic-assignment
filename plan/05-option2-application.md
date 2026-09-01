@@ -103,22 +103,11 @@ pass/fail only once its inputs exist.
 
 A sticky sidebar, present from step 1, updating on every keystroke:
 
-```
-+- You may qualify for --------------------+
-| [*] Operating Line of Credit    ELIGIBLE |
-|     $25k-$500k | 5.9% | you asked $180k  |
-|     [+] 1,240 ac (needs 200)             |
-|     [+] DSCR 1.41 (needs 1.25)           |
-|                                          |
-| [*] Equipment Loan              NOT YET  |
-|     [+] Max $250k - you asked $180k      |
-|     [x] LTV 88% (max 80%)      [explain] |
-|         > borrow $164k, or add $30k down |
-|                                          |
-| [ ] Livestock Term Loan       MORE INFO  |
-|     Enter your herd details in step 2    |
-+------------------------------------------+
-```
+![Eligibility panel, light and dark](../design/preview/fieldwork.svg)
+
+*The right-hand card in each half. Rendered from `design/tokens.json`, so this is the real
+palette rather than an impression of it.*
+
 
 Two things make this good rather than a checklist:
 
