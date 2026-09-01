@@ -16,7 +16,7 @@ is what an agent reads before its first edit.
 
 | # | Scope | Owns | Must not touch | Waits for | Est |
 |---|---|---|---|---|---|
-| 1 | **platform** | `tooling/`, `turbo.json`, `pnpm-workspace.yaml`, root `package.json`, `.github/workflows/`, Vercel project config, `supabase/config.toml`, the Angular workspace shell (`angular.json`, `src/main.ts`, `src/index.html`, `src/styles.scss`), and the **initial scaffold only** of `apps/*` and `packages/*` | the *contents* of any app or package once scaffolded, including `app.config.ts` and `app.routes.ts` after it has generated them | - | 1.0 h |
+| 1 | **platform** | `tooling/`, `turbo.json`, `pnpm-workspace.yaml`, root `package.json`, `.github/workflows/`, Vercel project config, `.gitignore`, `supabase/config.toml`, the Angular workspace shell (`angular.json`, `src/main.ts`, `src/index.html`, `src/styles.scss`), and the **initial scaffold only** of `apps/*` and `packages/*` | the *contents* of any app or package once scaffolded, including `app.config.ts` and `app.routes.ts` after it has generated them | - | 1.0 h |
 | 2 | **contracts** | `packages/domain/`, `supabase/migrations/0001_init.sql`, `supabase/seed.sql` | every consumer of the types it defines | platform | 1.0 h |
 | 3 | **workflow** | `packages/workflow/`, the generated transitions migration | `packages/domain` (consume only) | contracts | 1.5 h |
 | 4 | **rules** | `packages/rules/` | `packages/workflow` | contracts | 1.0 h |
@@ -138,6 +138,8 @@ one.
 | `packages/domain/**` | contracts | Needs a change? Comment on the contracts issue with the type you need and stop. Do not add a local copy. |
 | `design/tokens.json` | design-system | Needs a colour that does not exist? The contract is wrong - ask for it to be extended for the whole theme, never hardcode one. |
 | `turbo.json`, `tooling/**` | platform | Comment on the platform issue. A task added ad hoc breaks the changed-only build in a way nobody notices for a day. |
+| `.gitignore` | platform | Every scope eventually wants a line in it - generated SQL, Playwright artefacts, a cache directory. Comment on the platform issue with the pattern and why. A missed pattern is how a credential reaches a public repository. |
+| `README.md` | nobody, until Phase 9 | It still holds the assignment brief. Phase 9 replaces it wholesale; until then an edit needs its own issue. Platform publishes its handoff to the issue thread, not here. |
 | `supabase/migrations/**` | see below | Append-only. |
 | generated files | the generator's owner | Never hand-edit. Change the source and regenerate. |
 
