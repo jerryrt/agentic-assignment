@@ -113,7 +113,7 @@ is worth knowing before Phase 0 rather than during it.
 ```jsonc
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": ["pnpm-lock.yaml", "tooling/tsconfig/**"],
+  "globalDependencies": ["pnpm-lock.yaml", "tooling/tsconfig/**", ".node-version"],
   "tasks": {
     "build": {
       "dependsOn": ["^build", "typecheck"],
