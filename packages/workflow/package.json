@@ -8,14 +8,17 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src",
-    "test": "vitest run --passWithNoTests"
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "gen": "sh ./tools/generate-transitions.sh write",
+    "gen:check": "sh ./tools/generate-transitions.sh check"
   },
   "dependencies": {
     "@lj/domain": "workspace:*"
   },
   "devDependencies": {
     "@lj/tsconfig": "workspace:*",
+    "esbuild": "0.28.2",
     "vitest": "catalog:"
   }
 }
