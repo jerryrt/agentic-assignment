@@ -41,6 +41,9 @@ jobs:
     needs: verify
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
     steps:
       - uses: actions/checkout@v7
       - uses: supabase/setup-cli@v3
@@ -48,6 +51,11 @@ jobs:
       - run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
       - run: supabase db push
 ```
+
+`SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` are not optional. The CLI authenticates to the
+platform API with the former and opens the direct Postgres connection with the latter; on a runner
+there is no keyring and no prompt to fall back to, so omitting either fails `link` rather than
+`push`, and the error names the missing keyring instead of the missing secret.
 
 Deployment itself stays on **Vercel's Git integration** rather than a `vercel deploy` step. It
 gives preview URLs per PR for free, and re-implementing that in Actions is work with no payoff at
