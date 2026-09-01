@@ -10,11 +10,14 @@
 -- Three properties are worth stating up front, because each drove a decision
 -- below that would otherwise look like over-engineering:
 --
---  1. RLS filters ROWS, never COLUMNS.  A borrower with a select policy on their
---     own application row can read `decision_note` off that row.  Omitting the
---     column from `application_borrower_v` does not stop them: the base table is
---     published too.  Column-level GRANTs are the only mechanism Postgres offers
---     here, so they carry the lender-only columns and the `profile.role`
+--  1. RLS filters ROWS, never COLUMNS.  Where a rule is really about a column,
+--     the schema is shaped so the question becomes a row question instead: the
+--     lender-only decision fields are a table, `application_decision`, with a
+--     row policy of its own, rather than columns on `application` that a
+--     borrower's own select policy would hand them.  0001_init.sql carries the
+--     reasoning.  The one rule that cannot be reshaped that way is
+--     `profile.role`, where the guarded column and the readable row belong to
+--     the same subject; there, and only there, a column-level GRANT carries the
 --     privilege escalation guard.
 --  2. A policy on `profile` that subqueries `profile` recurses (plan/10, "Supabase
 --     RLS recursion").  Every role lookup below goes through a `security definer`
@@ -109,6 +112,33 @@ as $fn$
   )
 $fn$;
 
+-- "Is the caller a lender at the organisation this application was sent to?"
+--
+-- Not a second definition of is_lender_of_org(); it is a composition of it, the
+-- way can_read_borrower_profile() is.  It exists because the predicate is needed
+-- four times by the `application_decision` policies below -- one select, one
+-- insert, and both sides of one update -- and four hand-written copies of a
+-- security predicate are four things that have to be kept in step.
+--
+-- Deliberately NOT security definer: it reads `application` as the CALLER, so a
+-- caller who cannot see the application cannot reach its decision either.  That
+-- composes the existing rule instead of adding a second one, and it fails closed
+-- -- which is why a borrower gets nothing here even though the borrower CAN see
+-- the application row: is_lender_of_org() is false for them.
+create function public.is_lender_of_application(p_application uuid)
+  returns boolean
+  language sql
+  stable
+  set search_path = ''
+as $fn$
+  select exists (
+    select 1
+    from public.application a
+    where a.id = p_application
+      and public.is_lender_of_org(a.org_id)
+  )
+$fn$;
+
 -- EXECUTE is granted to PUBLIC by default, which includes `anon`.  None of the
 -- policies below is reachable by `anon` (every one is `to authenticated`), so
 -- there is no reason for an unauthenticated caller to be able to invoke these.
@@ -116,11 +146,13 @@ revoke execute on function public.current_app_role() from public;
 revoke execute on function public.current_org_id() from public;
 revoke execute on function public.is_lender_of_org(uuid) from public;
 revoke execute on function public.can_read_borrower_profile(uuid) from public;
+revoke execute on function public.is_lender_of_application(uuid) from public;
 
 grant execute on function public.current_app_role() to authenticated;
 grant execute on function public.current_org_id() to authenticated;
 grant execute on function public.is_lender_of_org(uuid) to authenticated;
 grant execute on function public.can_read_borrower_profile(uuid) to authenticated;
+grant execute on function public.is_lender_of_application(uuid) to authenticated;
 
 -- enable ------------------------------------------------------------------
 --
@@ -133,12 +165,13 @@ grant execute on function public.can_read_borrower_profile(uuid) to authenticate
 -- table owner to these policies too, which would break the definer helpers
 -- above and the signup trigger in 0001_init.sql.
 
-alter table public.organisation        enable row level security;
-alter table public.profile             enable row level security;
-alter table public.loan_product        enable row level security;
-alter table public.application         enable row level security;
-alter table public.workflow_event      enable row level security;
-alter table public.workflow_transition enable row level security;
+alter table public.organisation         enable row level security;
+alter table public.profile              enable row level security;
+alter table public.loan_product         enable row level security;
+alter table public.application          enable row level security;
+alter table public.application_decision enable row level security;
+alter table public.workflow_event       enable row level security;
+alter table public.workflow_transition  enable row level security;
 
 -- privileges --------------------------------------------------------------
 --
@@ -153,12 +186,13 @@ alter table public.workflow_transition enable row level security;
 -- public loan products can add that one grant in its own migration, where it can
 -- be reviewed as the deliberate widening it is.
 
-revoke all on public.organisation        from anon, authenticated;
-revoke all on public.profile             from anon, authenticated;
-revoke all on public.loan_product        from anon, authenticated;
-revoke all on public.application         from anon, authenticated;
-revoke all on public.workflow_event      from anon, authenticated;
-revoke all on public.workflow_transition from anon, authenticated;
+revoke all on public.organisation         from anon, authenticated;
+revoke all on public.profile              from anon, authenticated;
+revoke all on public.loan_product         from anon, authenticated;
+revoke all on public.application          from anon, authenticated;
+revoke all on public.application_decision from anon, authenticated;
+revoke all on public.workflow_event       from anon, authenticated;
+revoke all on public.workflow_transition  from anon, authenticated;
 
 grant select on public.organisation        to authenticated;
 grant select on public.loan_product        to authenticated;
@@ -183,25 +217,42 @@ grant select on public.workflow_transition to authenticated;
 -- role, which is not subject to either.
 grant update (full_name) on public.profile to authenticated;
 
--- application: `decision_note` and `risk_grade` are lender-only, and the base
--- table is published to clients alongside the two projections.  Column omission
--- in `application_borrower_v` is honest but it is not a gate, so the columns are
--- withheld at the privilege level and handed back to lenders through the
--- definer view at the end of this file.
+-- application: ordinary table-level SELECT.
+--
+-- There is nothing left on this table to withhold from a borrower -- the
+-- lender-only fields are rows in `application_decision` now -- so SELECT is
+-- granted whole and the row policies below decide everything.  That is worth
+-- more than tidiness: a column-level SELECT grant makes a client `select('*')`
+-- fail with 42501, whose message does not name the withheld column, so the
+-- first symptom of the gate is an error nobody can read.  A row policy returns
+-- fewer rows, which is legible.
 --
 -- INSERT deliberately omits `state`: a borrower creates drafts, and with no
 -- privilege on the column the row can only take the 'draft' default.  UPDATE
 -- omits it for the same reason, so the client autosave path physically cannot
 -- move an application through the machine; state changes go through the API's
 -- service role and are re-checked by assert_legal_transition().
-grant select (id, borrower_id, org_id, state, revision, data, furthest_step,
-              submitted_at, decided_at, created_at, updated_at)
-  on public.application to authenticated;
+grant select on public.application to authenticated;
 grant insert (borrower_id, org_id, data, furthest_step)
   on public.application to authenticated;
 grant update (data, furthest_step, revision, updated_at)
   on public.application to authenticated;
 grant delete on public.application to authenticated;
+
+-- application_decision: whole-table SELECT, INSERT and UPDATE, because who may
+-- touch a decision is a row question and the policy below is the answer.
+--
+-- No DELETE, for anyone.  A decision is the lender's side of the audit trail;
+-- it is superseded by an update, not erased, and it disappears only with the
+-- application it belongs to, by the cascade in 0001_init.sql.
+grant select, insert on public.application_decision to authenticated;
+-- Update is granted per column, not per table.  A policy chooses rows and has no
+-- notion of "this column changed", so a whole-table update grant would let a
+-- lender backdate `recorded_at` on their own audit entry, and repoint
+-- `application_id` at another application of the same organisation - both sides
+-- satisfy the policy, so a decision could be moved between files unremarked.
+-- Same argument as the `profile.role` grant above.
+grant update (decision_note, risk_grade, decided_by) on public.application_decision to authenticated;
 
 -- workflow_event: append only, and meant literally.
 --
@@ -305,6 +356,42 @@ create policy application_delete_own_draft on public.application
   for delete to authenticated
   using (borrower_id = (select auth.uid()) and state = 'draft');
 
+-- application_decision ----------------------------------------------------
+-- select/insert/update: a lender at the receiving organisation, and nobody
+--   else.  In particular not the borrower the row is about, which is the whole
+--   reason these fields are a table rather than two columns on `application`.
+-- delete: nobody, enforced by the missing grant above.
+--
+-- The organisation is not a column here.  It is read from the application the
+-- row belongs to, through is_lender_of_application(), which composes the same
+-- is_lender_of_org() the `application` select policy uses -- so there remains
+-- one definition of "a lender at the receiving organisation" and both
+-- enforcement points move together.
+--
+-- `decided_by` is pinned to the caller on every client write.  A lender who may
+-- write a decision could otherwise attribute it to a colleague, and a forged
+-- attribution in an audit trail is worse than a missing one because it is
+-- believed.  The API's service role bypasses RLS and is unaffected, so a
+-- system-written decision is still possible where it is meant to be.
+create policy application_decision_read_as_lender on public.application_decision
+  for select to authenticated
+  using (public.is_lender_of_application(application_id));
+
+create policy application_decision_insert_as_lender on public.application_decision
+  for insert to authenticated
+  with check (
+    public.is_lender_of_application(application_id)
+    and decided_by = (select auth.uid())
+  );
+
+create policy application_decision_update_as_lender on public.application_decision
+  for update to authenticated
+  using (public.is_lender_of_application(application_id))
+  with check (
+    public.is_lender_of_application(application_id)
+    and decided_by = (select auth.uid())
+  );
+
 -- workflow_event ----------------------------------------------------------
 -- select: whoever can see the subject.  The log carries no access rule of its
 --   own; it inherits the subject's, by reading `application` under the caller's
@@ -355,39 +442,19 @@ create policy workflow_transition_read on public.workflow_transition
 
 -- projections -------------------------------------------------------------
 --
--- `application_borrower_v` stays exactly as 0001_init.sql defined it, with
--- `security_invoker = on`.  It projects only columns `authenticated` now holds a
--- privilege on, and its rows come from the `application` policies above, so it
--- needs no rule of its own -- which is the point: one definition of who may read
--- a loan file, not two.
+-- Both views stay exactly as 0001_init.sql defined them, with
+-- `security_invoker = on`, and neither carries a predicate of its own.  That is
+-- what splitting `application_decision` out bought: every column either view
+-- projects is one `authenticated` holds an ordinary privilege on, and every row
+-- either view returns is one the policies above already admit, so there is a
+-- single definition of who may read a loan file rather than one in the policies
+-- and a second inside a definer view.
 --
--- `application_lender_v` cannot work the same way.  It projects `decision_note`
--- and `risk_grade`, and those columns were just revoked from `authenticated` --
--- the only privilege level Postgres offers, since borrowers and lenders are the
--- same database role and are told apart only by a claim inside the JWT.  Under
--- `security_invoker` the view would fail with a permission error for the lender
--- it exists to serve.
+-- What a borrower gets from `application_lender_v` is therefore their own
+-- applications with the decision columns null: the left join finds no decision
+-- row their policy admits.  Nothing leaks, no view in this schema runs as its
+-- owner, and Supabase's `security_definer_view` lint has nothing to report.
 --
--- So the lender projection becomes the one definer surface in the schema: it
--- runs as its owner, which is how it reaches the two withheld columns, and it
--- therefore has to carry its own predicate because the row policies no longer
--- apply inside it.  That predicate is not a second copy of the rule -- it is a
--- call to the same is_lender_of_org() the `application` select policy uses, so
--- there remains exactly one definition of "a lender at the receiving
--- organisation" and both enforcement points move together.
---
--- Supabase's linter flags any view that is not `security_invoker` as
--- `security_definer_view`.  Here it is the mechanism rather than an oversight.
-create or replace view public.application_lender_v
-  with (security_invoker = off) as
-  select a.id, a.borrower_id, a.org_id, a.state, a.revision, a.data,
-         a.furthest_step, a.submitted_at, a.decided_at, a.decision_note,
-         a.risk_grade, a.created_at, a.updated_at,
-         p.full_name as borrower_name
-  from public.application a
-  join public.profile p on p.id = a.borrower_id
-  where public.is_lender_of_org(a.org_id);
-
 -- Both views are auto-updatable, so the default grants let a client INSERT and
 -- UPDATE through them.  Reads are all either is meant to offer.
 revoke all on public.application_borrower_v from anon, authenticated;

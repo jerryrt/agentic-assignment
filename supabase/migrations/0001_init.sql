@@ -57,11 +57,55 @@ create table application (
   data           jsonb not null default '{}',         -- form payload
   furthest_step  text,                                -- resume hint
   submitted_at   timestamptz,
+  -- Stays here, and is not moved into application_decision below: when an
+  -- application was decided is a fact the borrower is entitled to, and
+  -- application_borrower_v projects it.  Only the reasoning behind the
+  -- decision is lender-only.
   decided_at     timestamptz,
-  decision_note  text,                                -- LENDER ONLY
-  risk_grade     text,                                -- LENDER ONLY
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
+);
+
+-- the lender-only half of a decision --------------------------------------
+--
+-- decision_note and risk_grade are lender-only, and they live in their own
+-- table rather than as columns on application because row-level security
+-- filters ROWS and never COLUMNS.  PostgREST publishes every table in `public`,
+-- so a borrower holding a select policy on their own application row could read
+-- those two columns straight off the base table however carefully
+-- application_borrower_v omits them.  A view hides a column; it does not
+-- protect one.
+--
+-- Postgres does offer column-level GRANTs, and that was the first shape tried.
+-- It fails on the fact that borrowers and lenders are the SAME database role
+-- here -- `authenticated` -- and are told apart only by a claim inside the JWT.
+-- Withholding the columns therefore withholds them from lenders too, so they
+-- have to be handed back through a view that runs as its owner, and the schema
+-- ends up with a privileged surface whose predicate sits beside the row
+-- policies instead of being one of them.  It also breaks `select('*')` on
+-- application with a permission error that never names the column it is about.
+--
+-- Splitting the table turns the column question back into a row question, which
+-- is the shape RLS is actually good at: one row policy on this table, ordinary
+-- table-level SELECT on application, and no definer view anywhere.
+--
+-- One row per application, so the primary key is the foreign key.  The decision
+-- is part of the loan file and goes when the file goes, hence the cascade.
+create table application_decision (
+  application_id uuid primary key references application(id) on delete cascade,
+  decision_note  text,
+  risk_grade     text,
+  -- Not null: an audit entry with no author is worse than no entry, because it
+  -- is believed.  The service role bypasses row-level security, so the policy
+  -- that pins this column on a client write cannot constrain the API path; the
+  -- column constraint is what covers both.
+  decided_by     uuid not null references profile(id),
+  -- Deliberately not a second `decided_at`.  That column stays on application,
+  -- where the borrower can read it; this one records when the internal note was
+  -- written, which stops being the same instant the first time a note is
+  -- amended after the fact.  Two columns of the same name would be two answers
+  -- to one question the first time they disagreed.
+  recorded_at    timestamptz not null default now()
 );
 
 -- the log ----------------------------------------------------------------
@@ -135,6 +179,26 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- An audit timestamp a client can choose is not an audit timestamp.  The column
+-- default fires on insert only, so an amended note would otherwise keep the
+-- instant of the original decision and misdate the trail.  Stamping it here
+-- covers both writes and is what lets `recorded_at` stay out of the update
+-- grant, so a lender cannot backdate their own entry.
+create function public.stamp_decision_recorded_at()
+  returns trigger
+  language plpgsql
+  set search_path = ''
+as $fn$
+begin
+  new.recorded_at := now();
+  return new;
+end
+$fn$;
+
+create trigger application_decision_recorded_at
+  before insert or update on public.application_decision
+  for each row execute function public.stamp_decision_recorded_at();
+
 -- transition guard -------------------------------------------------------
 
 -- Braces to the type system's belt: even a leaked service key or a bug in the API
@@ -170,13 +234,20 @@ create trigger application_assert_legal_transition
 
 -- projections ------------------------------------------------------------
 --
--- Two roles, two truths, enforced by column-level omission rather than by hiding
--- a field in a template.  security_invoker is on so the views read with the
--- caller's rights: a view defined by the owner otherwise runs as the owner and
--- would read straight past the row-level policies that land next.
+-- Two roles, two truths.  What each role may see is decided by the row policies
+-- in 0002_rls.sql; the views exist so each audience reads one row in the shape
+-- it needs, not as a second gate.  security_invoker is on for both -- it is what
+-- makes that true.  A view defined by the owner runs as the owner and reads
+-- straight past the row policies, which would make the view the gate and leave
+-- two definitions of who may read a loan file.
+--
+-- That is why the lender-only fields are a separate TABLE rather than columns
+-- omitted from this view: omission is honest but it is not enforcement, and
+-- enforcement by view would have cost security_invoker.  See the comment on
+-- application_decision above.
 
--- No decision_note, no risk_grade: a borrower cannot select what the view does
--- not project, whatever the API does.
+-- Nothing is withheld here.  Every column below is one `authenticated` holds an
+-- ordinary privilege on, and the rows come from the application policies.
 create view application_borrower_v
   with (security_invoker = on) as
   select id, borrower_id, org_id, state, revision, data, furthest_step,
@@ -192,11 +263,21 @@ create view application_borrower_v
 -- migration with `create or replace view` appending the column at the end.
 -- Defining it here as a constant zero was the alternative and is worse: a wrong
 -- number is believed, whereas an absent column fails loudly at the first caller.
+--
+-- The join to application_decision is a LEFT join: an application without a
+-- decision yet is the normal case, and an inner join would silently drop every
+-- row in the lender's queue that still needs deciding -- which is all of them.
+-- Under security_invoker the decision columns come back null for any caller
+-- whose policy does not admit the decision row, so a borrower reading this view
+-- sees their own application with the lender-only fields empty rather than a
+-- permission error, and the fields themselves are unreachable either way.
 create view application_lender_v
   with (security_invoker = on) as
   select a.id, a.borrower_id, a.org_id, a.state, a.revision, a.data,
-         a.furthest_step, a.submitted_at, a.decided_at, a.decision_note,
-         a.risk_grade, a.created_at, a.updated_at,
+         a.furthest_step, a.submitted_at, a.decided_at,
+         d.decision_note, d.risk_grade, d.decided_by, d.recorded_at,
+         a.created_at, a.updated_at,
          p.full_name as borrower_name
   from application a
-  join profile p on p.id = a.borrower_id;
+  join profile p on p.id = a.borrower_id
+  left join application_decision d on d.application_id = a.id;

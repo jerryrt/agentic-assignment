@@ -40,12 +40,10 @@ export type Database = {
           created_at: string
           data: Json
           decided_at: string | null
-          decision_note: string | null
           furthest_step: string | null
           id: string
           org_id: string
           revision: number
-          risk_grade: string | null
           state: string
           submitted_at: string | null
           updated_at: string
@@ -55,12 +53,10 @@ export type Database = {
           created_at?: string
           data?: Json
           decided_at?: string | null
-          decision_note?: string | null
           furthest_step?: string | null
           id?: string
           org_id: string
           revision?: number
-          risk_grade?: string | null
           state?: string
           submitted_at?: string | null
           updated_at?: string
@@ -70,12 +66,10 @@ export type Database = {
           created_at?: string
           data?: Json
           decided_at?: string | null
-          decision_note?: string | null
           furthest_step?: string | null
           id?: string
           org_id?: string
           revision?: number
-          risk_grade?: string | null
           state?: string
           submitted_at?: string | null
           updated_at?: string
@@ -93,6 +87,59 @@ export type Database = {
             columns: ["org_id"]
             isOneToOne: false
             referencedRelation: "organisation"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      application_decision: {
+        Row: {
+          application_id: string
+          decided_by: string | null
+          decision_note: string | null
+          recorded_at: string
+          risk_grade: string | null
+        }
+        Insert: {
+          application_id: string
+          decided_by?: string | null
+          decision_note?: string | null
+          recorded_at?: string
+          risk_grade?: string | null
+        }
+        Update: {
+          application_id?: string
+          decided_by?: string | null
+          decision_note?: string | null
+          recorded_at?: string
+          risk_grade?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "application_decision_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: true
+            referencedRelation: "application"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "application_decision_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: true
+            referencedRelation: "application_borrower_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "application_decision_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: true
+            referencedRelation: "application_lender_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "application_decision_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
             referencedColumns: ["id"]
           },
         ]
@@ -325,10 +372,12 @@ export type Database = {
           created_at: string | null
           data: Json | null
           decided_at: string | null
+          decided_by: string | null
           decision_note: string | null
           furthest_step: string | null
           id: string | null
           org_id: string | null
+          recorded_at: string | null
           revision: number | null
           risk_grade: string | null
           state: string | null
@@ -344,6 +393,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "application_decision_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "application_org_id_fkey"
             columns: ["org_id"]
             isOneToOne: false
@@ -354,7 +410,20 @@ export type Database = {
       }
     }
     Functions: {
-      [_ in never]: never
+      can_read_borrower_profile: {
+        Args: { p_borrower: string }
+        Returns: boolean
+      }
+      current_app_role: {
+        Args: never
+        Returns: Database["public"]["Enums"]["app_role"]
+      }
+      current_org_id: { Args: never; Returns: string }
+      is_lender_of_application: {
+        Args: { p_application: string }
+        Returns: boolean
+      }
+      is_lender_of_org: { Args: { p_org: string }; Returns: boolean }
     }
     Enums: {
       app_role: "borrower" | "lender" | "admin"
