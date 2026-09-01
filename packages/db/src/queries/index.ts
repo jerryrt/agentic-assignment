@@ -9,6 +9,7 @@
  * section 8).
  */
 
+export * from './application-decisions';
 export * from './applications';
 export * from './loan-products';
 export * from './organisations';

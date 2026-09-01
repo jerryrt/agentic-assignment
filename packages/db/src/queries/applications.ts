@@ -1,12 +1,14 @@
 /**
  * The application aggregate, and the two projections over it.
  *
- * `plan/02-domain-model.md` implements "two roles, two truths" by column-level
- * omission in a view rather than by hiding a field in a template:
- * `application_borrower_v` has no `decision_note` and no `risk_grade`;
- * `application_lender_v` has both, plus the borrower's name.  The migration is
- * what enforces that.  The job of this module is to make the enforcement hard
- * to route around by accident, which it does in three ways:
+ * `plan/02-domain-model.md` implements "two roles, two truths" as two views:
+ * `application_borrower_v` projects no `decision_note` and no `risk_grade`;
+ * `application_lender_v` projects both, plus the borrower's name.  What
+ * ENFORCES that is neither view -- both run with `security_invoker` and carry
+ * no predicate -- but the row policy on `application_decision`, the table those
+ * two fields live in.  The views decide the shape each audience reads; the
+ * policy decides what is in it.  The job of this module is to make the shape
+ * hard to get wrong by accident, which it does in three ways:
  *
  *   - there is no helper that takes a view name, or a table name, as a string,
  *     so no call site can drift onto the lender view by editing a literal;
@@ -17,7 +19,10 @@
  *     caller holding a borrower cannot be handed lender columns.
  *
  * Reads of the base `application` table are deliberately absent.  Everything
- * readable is read through a projection; only writes address the table.
+ * readable is read through a projection; only writes address the table.  That
+ * is a legibility choice rather than a containment one: a caller that reached
+ * for the table would get exactly the columns the borrower view has, because
+ * the lender-only fields are not there to be read.
  */
 
 import type { DatabaseClient } from '../client';
@@ -55,11 +60,12 @@ export type ApplicationFor<TAudience extends ApplicationAudience> =
 /**
  * What a write returns.
  *
- * Four columns, listed explicitly, rather than the whole row: a write goes to
- * the base table, and the base table still carries `decision_note` and
- * `risk_grade`.  Returning them from a borrower's autosave would hand back
- * through the write path exactly what the borrower view exists to withhold.
- * These four are what a caller needs to reconcile its local copy.
+ * Four columns, listed explicitly, rather than the whole row.  Nothing on the
+ * base table is confidential any more -- `decision_note` and `risk_grade` are
+ * rows in `application_decision` now -- so this is no longer a containment
+ * measure; it is that these four are what a caller needs to reconcile its local
+ * copy, and returning a `data` blob the caller just sent is noise on every
+ * autosave.
  */
 export type ApplicationWriteAck = Pick<
   ApplicationTable['Row'],
@@ -72,10 +78,10 @@ export type ApplicationInsert = ApplicationTable['Insert'];
 export type ApplicationUpdate = ApplicationTable['Update'];
 
 /**
- * `select('*')` is correct against a view and would be wrong against the
- * table: the view is the projection, so widening the select list cannot widen
- * what comes back, and naming the columns here would be a second copy of the
- * view definition for the migration to drift from (CLAUDE.md section 9).
+ * `select('*')` is correct against a view: the view is the projection, so
+ * widening the select list cannot widen what comes back, and naming the columns
+ * here would be a second copy of the view definition for the migration to drift
+ * from (CLAUDE.md section 9).
  */
 const ALL_PROJECTED_COLUMNS = '*';
 
