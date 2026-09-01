@@ -18,7 +18,8 @@ and the scope honesty.
 | `09-build-order.md` | Phased execution with four submittable checkpoints |
 | `10-scope-and-risks.md` | Cut list, risks, and what goes in the submission README |
 
-Engineering conventions for this repo live in `../CLAUDE.md`.
+Engineering conventions live in `../CLAUDE.md`. How to run and test the project locally lives in
+`../docs/`.
 
 Start at `09-build-order.md` Phase 0 when writing code.
 
