@@ -95,6 +95,18 @@ is worth knowing before Phase 0 rather than during it.
 - Internal packages are consumed as **TS source, not built dist** (`"exports": "./src/index.ts"`,
   `publishConfig` unused). One less build step; Angular's and Vercel's bundlers both handle it.
   Trade-off: `typecheck` must run repo-wide, which it does anyway.
+- **Every workspace package is named `@lj/<dir>`** -- `packages/domain` is `@lj/domain`,
+  `apps/web` is `@lj/web`. The directory name and the package name are independent in npm, so
+  the convention has to be stated or nine manifests will disagree. A scope makes an internal
+  import unmistakable at a glance: `@lj/rules` cannot be confused with a package from the
+  registry, and `import { ... } from '@lj/domain'` reads as a layer crossing, which is what the
+  ESLint layering rule in `../CLAUDE.md` is watching for. The scope is never published; every
+  manifest is `"private": true`.
+- **Dependencies between packages are declared with `workspace:*`**, not by a relative path or a
+  `tsconfig` path alias alone. This is not bookkeeping: the manifests are the only place
+  Turborepo learns the graph. A package that is imported in TypeScript but absent from
+  `dependencies` is invisible to Turbo, which will then order the two tasks wrongly and let
+  `turbo-ignore` cancel a Vercel build that should have run.
 
 ## turbo.json
 
