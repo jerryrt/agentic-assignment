@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./service-role": "./src/service-role.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -12,10 +13,12 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@lj/domain": "workspace:*"
+    "@lj/domain": "workspace:*",
+    "@supabase/supabase-js": "2.112.4"
   },
   "devDependencies": {
     "@lj/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
     "vitest": "catalog:"
   }
 }
