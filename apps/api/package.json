@@ -1,0 +1,20 @@
+{
+  "name": "@lj/api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "node --watch dev/local-server.ts",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@lj/tsconfig": "workspace:*",
+    "@types/node": "24.13.3",
+    "vitest": "4.1.11"
+  }
+}

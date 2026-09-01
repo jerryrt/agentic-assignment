@@ -1,0 +1,14 @@
+{
+  "extends": "@lj/tsconfig/node.json",
+  "compilerOptions": {
+    // Nothing here is compiled: Vercel builds the function from the TypeScript
+    // source and Node strips types locally, so `tsc` is only ever a checker.
+    "noEmit": true,
+    // Required for the `.ts` import specifiers this package uses. Node's
+    // native type stripping performs no extension rewriting, so a `.js`
+    // specifier would resolve at typecheck time and fail at runtime.
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["api/**/*.ts", "dev/**/*.ts", "test/**/*.ts"]
+}
