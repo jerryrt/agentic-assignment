@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }        # turbo needs history to diff
+      - uses: pnpm/action-setup@v6      # version comes from packageManager
+      - uses: actions/setup-node@v7
+        with: { node-version-file: .node-version, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo lint typecheck test build --filter=...[origin/main^]
+
+      # workflow:check arrives with the transition codegen in Phase 2 and
+      # tokens:check with the token emitter in Phase 3. Calling them now fails
+      # every run; deleting them loses the guard that keeps generated SQL and
+      # stylesheets from drifting, which is exactly the kind of check nobody
+      # notices is missing. Run each the moment the root manifest declares it,
+      # and say so on every run until then.
+      - name: generated artefacts still match their sources
+        run: |
+          set -euo pipefail
+          for check in workflow:check tokens:check; do
+            if node -e 'process.exit(require("./package.json").scripts?.[process.argv[1]] ? 0 : 1)' "$check"; then
+              pnpm run "$check"
+            else
+              echo "::warning::$check is not wired yet, so nothing verifies the artefacts it owns"
+            fi
+          done
+
+  migrate:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      # A runner has no keyring and no prompt. Without the access token the CLI
+      # cannot reach the platform API and without the password it cannot open the
+      # direct Postgres connection, so omitting either fails at `link` with an
+      # error naming the missing keyring rather than the missing secret.
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v3
+        with: { version: 2.116.0 }
+      - run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+      - run: supabase db push
