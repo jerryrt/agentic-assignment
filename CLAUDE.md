@@ -2,9 +2,9 @@
 
 Binding rules for this repository. They apply to every commit, human or agent authored.
 
-Implementation plans live in `plan/`; start at `plan/09-build-order.md`. Visual design candidates
-live in `design/`. Work is coordinated through GitHub Issues - read section 3 before starting on
-one.
+Implementation plans live in `plan/`; start at `plan/09-build-order.md`. Visual design lives in
+`design/`. How to run and verify the project lives in `docs/`. Work is coordinated through GitHub
+Issues - read **Working as one of several agents** before starting on one.
 
 ---
 
@@ -89,8 +89,8 @@ thread and against `git log` first.
 
 ### Ownership boundaries
 
-This is what makes parallel work safe, and it is the practical reason the layering rule in
-section 7 exists.
+This is what makes parallel work safe, and it is the practical reason the layering rule
+exists.
 
 - **Every issue names the paths it owns**, in its body. An agent edits only those paths. If the
   issue does not name them, add them and say so before starting.
@@ -107,7 +107,7 @@ section 7 exists.
 
 The thread is a log, not a conversation. Comment when state changes; do not narrate. Every
 comment must be **self-contained** - the agent reading it next has none of your context - and
-plain ASCII per section 4.
+plain ASCII per **Plain ASCII only**.
 
 ```
 status:     in-progress | blocked | ready-for-review
@@ -128,7 +128,7 @@ indistinguishable from a crashed one, and the difference costs someone an hour t
 - Commit trailers reference issues with `Refs: #<n>`. **Never `Closes`, `Fixes` or `Resolves`** -
   GitHub acts on those keywords automatically on merge, which takes the decision away from the
   person managing progress. `Fixes:` in its kernel sense (naming a broken commit by SHA, per
-  section 2) is unaffected and still correct.
+  **Commit discipline**) is unaffected and still correct.
 
 ### Branches and pull requests
 
@@ -136,16 +136,16 @@ indistinguishable from a crashed one, and the difference costs someone an hour t
 - Rebase onto `main` before marking ready for review. Never force-push a branch another agent has
   based work on; if one has, coordinate in the thread first.
 - The pull request body states what changed, why, how it was verified, and `Refs: #<n>`. The
-  commits carry the detail (section 2); the PR body carries the summary.
+  commits carry the detail (**Commit discipline**); the PR body carries the summary.
 
 ### Done means
 
 An issue is ready for review only when all of these hold. State them in the closing comment:
 
-1. Tests were written first and pass (section 6).
+1. Tests were written first and pass (**Test-driven development**).
 2. CI is green, including `workflow:check` and `tokens:check`.
-3. Layering is intact (section 7) and nothing was duplicated to avoid a conflict (section 8).
-4. Sources are plain ASCII (section 4).
+3. Layering is intact (**Layered design**) and nothing was duplicated (**No duplication**).
+4. Sources are plain ASCII (**Plain ASCII only**).
 5. Only the paths the issue owns were touched.
 
 ### Never in an issue
@@ -195,7 +195,7 @@ document rather than a picture of one.
 
 ASCII art was the wrong tool for all of these: it cannot be diffed meaningfully, it breaks the
 moment a label changes length, it carries no semantics an auditor or a tool can read, and it
-silently misaligns under proportional fonts. Mermaid source is still plain ASCII (section 4), so
+silently misaligns under proportional fonts. Mermaid source is still plain ASCII, so
 this rule and that one do not conflict.
 
 Two things are **not** ASCII art and stay as they are: a directory listing, and a fenced block of
@@ -223,7 +223,54 @@ Choose layout for a narrow column. A wide `direction LR` diagram is unreadable o
 it to the content width; default top-to-bottom usually wins for anything with more than about six
 nodes.
 
-## 6. Test-driven development
+## 6. Local-first development
+
+**The inner loop runs entirely on this machine, in containers, with no cloud account involved.
+Publishing is a separate, deliberate act.**
+
+Three reasons, in the order they matter:
+
+1. **Security.** A developer who needs cloud credentials to run tests is a developer who has cloud
+   credentials on their laptop. The local stack issues its own throwaway keys, so no real secret
+   has to exist outside the deployment environment.
+2. **Speed.** The edit-run-test cycle is bounded by the machine, not by a deploy. A cloud round
+   trip in the inner loop costs minutes per iteration and buys nothing.
+3. **Reproducibility.** Containers pin the database, auth and storage versions. "Works on the
+   cloud project" is not a reproducible claim; a `docker compose` digest is.
+
+### What that means concretely
+
+- `supabase start` brings up Postgres, Auth, Storage, the REST layer and a mail catcher as local
+  containers. Auth is real, not stubbed - signup and login work offline, and confirmation mail
+  lands in the local inbox rather than a real one.
+- Migrations run against the local database first. `supabase db reset` is the only way schema
+  changes are applied; the hosted dashboard is for inspection, never for editing.
+- Tests, lint, typecheck and build run offline once dependencies are installed. Browser tests run
+  against that same local stack, in a container - see `docs/02-browser-testing.md`.
+- **Publish when a deliverable needs a URL**, not on every push to a branch.
+
+### The one thing local-first must not defer
+
+Prove the deployment path **early, once, on an empty app** - it is Phase 0 in
+`plan/09-build-order.md` for this reason. A pipeline first exercised at the end is a pipeline that
+fails at the end, when there is no time left. Local-first governs the daily loop; it is not a
+licence to leave the publish path unproven.
+
+### Pin versions, and verify them
+
+Every version lives once, in the pinned toolchain table in `plan/01-architecture.md`.
+
+**Check a pin against the registry rather than trusting `latest` or memory.** `latest` is not the
+same as "the latest version this project can use": at the time of writing, npm's `latest`
+TypeScript is a major release that Angular refuses. Assume any version recalled from memory is
+wrong and confirm it:
+
+```bash
+npm view <pkg> version
+npm view <pkg> peerDependencies
+```
+
+## 7. Test-driven development
 
 Write the failing test first. Red, green, refactor. Non-negotiable for:
 
@@ -235,14 +282,17 @@ These are pure functions with no I/O, so a test is cheaper to write than a manua
 no excuse available.
 
 For UI and I/O code, TDD applies where behaviour is specifiable: route guards, store reducers,
-the draft reconciliation logic. It does not apply to layout. **We do not chase a coverage
+the draft reconciliation logic. It does not apply to layout. Behaviour that only exists in a
+browser - draft recovery across a reload, two roles reading one record, focus and contrast - is
+covered by the browser suite in `docs/02-browser-testing.md`, not by unit tests pretending to be
+one. **We do not chase a coverage
 percentage** - the brief says so explicitly and the metric rewards the wrong tests. Cover the
 things that would be wrong silently.
 
 A bug fix starts with a test that reproduces the bug. Always. That test is what stops it
 returning, and it belongs in the same commit as the fix.
 
-## 7. Layered design
+## 8. Layered design
 
 Dependencies point one way. A lower layer must never import from a higher one.
 
@@ -268,7 +318,7 @@ Consequences to hold to:
   is eligible, that rule is now untestable and duplicated. Components render; they do not decide.
 - **SQL lives in `packages/db` or a migration.** Not in a component, not in a handler.
 
-## 8. No duplication
+## 9. No duplication
 
 Two copies of a rule become two different rules. The specific traps in this codebase:
 
@@ -285,7 +335,7 @@ The counterweight: do not abstract on the first repetition. Three occurrences, o
 provably stay in lockstep, justifies the abstraction. A wrong abstraction costs more than the
 duplication it removed.
 
-## 9. Security baseline
+## 10. Security baseline
 
 - **RLS is the boundary.** Every table has row-level security on. The API is a convenience layer,
   never the only gate. Assume any client-reachable endpoint will be called with forged input.
@@ -299,7 +349,7 @@ duplication it removed.
 - **Money is integer minor units in TypeScript** and `numeric` in Postgres. No floats, ever.
 - Parameterised queries only. No string-built SQL.
 
-## 10. Style
+## 11. Style
 
 - TypeScript `strict`, plus `noUncheckedIndexedAccess`. No `any` - use `unknown` and narrow.
 - No non-null assertions (`!`) outside tests. If a value can be absent, handle it.
