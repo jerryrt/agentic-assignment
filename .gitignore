@@ -5,3 +5,10 @@ node_modules/
 dist/
 .env
 .env.local
+
+# Supabase CLI local state -- regenerated on demand, never shared.
+# linked-project.json records whichever project ref the last `supabase link`
+# used, which is per-developer and goes stale the moment a project is replaced.
+supabase/.temp/
+supabase/.branches/
+supabase/.env
