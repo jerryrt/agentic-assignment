@@ -74,7 +74,7 @@ create table application (
 -- the log ----------------------------------------------------------------
 create table workflow_event (
   id            bigserial primary key,
-  machine       text not null,        -- 'application' | 'document' | 'credit_release'
+  machine       text not null,        -- 'application' | 'document_slot' | 'credit_release'
   subject_id    uuid not null,
   from_state    text,
   to_state      text not null,
