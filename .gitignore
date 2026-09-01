@@ -21,3 +21,5 @@ supabase/.env
 .angular/
 
 .env.*.local
+coverage/
+out-tsc/
