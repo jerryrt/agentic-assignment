@@ -16,20 +16,20 @@ is what an agent reads before its first edit.
 
 | # | Scope | Owns | Must not touch | Waits for | Est |
 |---|---|---|---|---|---|
-| 1 | **platform** | `tooling/`, `turbo.json`, `pnpm-workspace.yaml`, root `package.json`, `.github/workflows/`, Vercel project config, `supabase/config.toml`, and the **initial scaffold only** of `apps/*` and `packages/*` | the *contents* of any app or package once scaffolded | - | 1.0 h |
+| 1 | **platform** | `tooling/`, `turbo.json`, `pnpm-workspace.yaml`, root `package.json`, `.github/workflows/`, Vercel project config, `supabase/config.toml`, the Angular workspace shell (`angular.json`, `src/main.ts`, `src/index.html`, `src/styles.scss`), and the **initial scaffold only** of `apps/*` and `packages/*` | the *contents* of any app or package once scaffolded, including `app.config.ts` and `app.routes.ts` after it has generated them | - | 1.0 h |
 | 2 | **contracts** | `packages/domain/`, `supabase/migrations/0001_init.sql`, `supabase/seed.sql` | every consumer of the types it defines | platform | 1.0 h |
 | 3 | **workflow** | `packages/workflow/`, the generated transitions migration | `packages/domain` (consume only) | contracts | 1.5 h |
 | 4 | **rules** | `packages/rules/` | `packages/workflow` | contracts | 1.0 h |
 | 5 | **design-system** | `packages/ui/`, `design/tokens.json`, the token emitter | any `features/` directory | contracts | 1.0 h |
 | 6 | **data** | `packages/db/`, the RLS policy migrations | `packages/domain`, `apps/` | contracts | 1.0 h |
 | 7 | **api** | `apps/api/` | `packages/*` | workflow, rules, data | 0.75 h |
-| 8 | **web-core** | `apps/web/src/app/core/`, `app.config.ts`, `app.routes.ts`, `shared/` | any `features/` directory | design-system, data | 1.0 h |
+| 8 | **web-core** | `apps/web/src/app/core/`, `app.config.ts`, `app.routes.ts`, the root `app.*` component, `shared/` | any `features/` directory | design-system, data | 1.0 h |
 | 9 | **feature-apply** | `apps/web/src/app/features/apply/` | `core/`, `packages/*`, other features | web-core, rules | 2.5 h |
 | 10 | **feature-documents** | `apps/web/src/app/features/documents/` | as above | web-core, rules | 1.5 h |
 | 11 | **feature-servicing** | `apps/web/src/app/features/servicing/` **and** `features/lender/` | as above | web-core, api | 2.0 h |
 | 12 | **qa** | `apps/web/e2e/`, `playwright.config.ts` | application source - it reports, it does not fix | the features it exercises | 1.5 h |
 
-### Three boundaries that are deliberate
+### Four boundaries that are deliberate
 
 **platform scaffolds every app and package, then never returns.** Phase 0 in
 [`../plan/09-build-order.md`](../plan/09-build-order.md) requires an Angular app, an API and five
@@ -39,6 +39,23 @@ scaffold versus contents. Scaffold is the manifest, the tsconfig, and an `index.
 nothing - enough that the workspace graph resolves and `typecheck` passes. Contents are what the
 owning scope writes afterwards. Once a package has an owner, platform edits it only through that
 owner's issue, exactly like any other contended file.
+
+That definition is exact for the five packages and useless for `apps/web`, because `ng new` is not
+decomposable: it emits an app shell in one step, and two of the files it emits - `app.config.ts`
+and `app.routes.ts` - are named in web-core's row below. Splitting the generator's output is not
+possible, so ownership is split instead, at the moment of the scaffold commit:
+
+| File | Owner after Phase 0 |
+|---|---|
+| `angular.json`, `src/main.ts`, `src/index.html`, `src/styles.scss` | platform - workspace shell, the same standing as `tooling/` |
+| `src/app/app.config.ts`, `src/app/app.routes.ts` | web-core, from the scaffold commit onward |
+| `src/app/app.*` (the root component) | web-core |
+
+Platform generates all of them and edits none of them again. web-core's files must be left in
+their generated-empty state - an empty `routes` array, a `providers` array with only what
+bootstrapping requires - so that web-core's first commit is a handoff rather than a second author
+in a populated file. The `touched:` line of platform's closing comment must list both, so the next
+agent knows they already exist.
 
 **Servicing and lender are one scope, not two.** Option 3's whole subject is two roles reading
 different truths from one record (`../plan/06-option3-servicing.md`). Splitting borrower and
