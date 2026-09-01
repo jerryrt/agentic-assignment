@@ -1,7 +1,10 @@
 # Engineering conventions
 
 Binding rules for this repository. They apply to every commit, human or agent authored.
-Implementation plans live in `plan/`; start at `plan/09-build-order.md`.
+
+Implementation plans live in `plan/`; start at `plan/09-build-order.md`. Visual design candidates
+live in `design/`. Work is coordinated through GitHub Issues - read section 3 before starting on
+one.
 
 ---
 
@@ -59,7 +62,98 @@ Rules for the body:
 
 Trailers are the last block, after a blank line, one per line, no blank lines between them.
 
-## 3. Plain ASCII only
+## 3. Working as one of several agents
+
+Implementation is carried out by multiple agents in parallel. **GitHub Issues are the
+coordination channel and the progress record.** The person running this repo manages the board;
+agents work inside it.
+
+The constraint that shapes every rule below: agents do not share memory, and a context window
+ends. The issue thread is the only project state that survives.
+
+### The thread is the source of truth
+
+Before touching anything on an issue, **read the whole thread, top to bottom.** Not the title,
+not the last comment. Work may already be done, redirected, or blocked by a decision recorded
+three comments up. Never act on remembered state from an earlier session - reconcile against the
+thread and against `git log` first.
+
+### Claim before working
+
+- Assign yourself and post a claim comment **before the first edit**.
+- If the issue is already assigned and its last comment is recent, do not start. Pick another, or
+  say so in the thread and wait.
+- One agent per issue. One issue per branch. No exceptions - two agents on one issue produces two
+  divergent branches and no way to tell which is correct.
+
+### Ownership boundaries
+
+This is what makes parallel work safe, and it is the practical reason the layering rule in
+section 6 exists.
+
+- **Every issue names the paths it owns**, in its body. An agent edits only those paths. If the
+  issue does not name them, add them and say so before starting.
+- Independent by construction: `packages/workflow`, `packages/rules`, and each feature under
+  `apps/web/features/` do not share files, so they proceed concurrently.
+- **Contended files** are the shared contracts: `packages/domain`, `design/tokens.json`,
+  `turbo.json`, `supabase/migrations/`, and anything generated. Changing one of these gets its
+  own issue and lands on its own; other agents rebase afterwards.
+- If your work needs a file another open issue owns, **comment on both issues and stop.** Do not
+  edit it and do not work around it with a duplicate. Duplication introduced to dodge a merge
+  conflict is the worst kind, because it is invisible until the two copies disagree.
+
+### Reporting
+
+The thread is a log, not a conversation. Comment when state changes; do not narrate. Every
+comment must be **self-contained** - the agent reading it next has none of your context - and
+plain ASCII per section 4.
+
+```
+status:     in-progress | blocked | ready-for-review
+done:       what is now true that was not before
+next:       the immediate next step, or "none - ready for review"
+blocked-by: #12, or nothing
+touched:    packages/workflow/src/engine.ts, packages/workflow/test/engine.spec.ts
+commits:    a1b2c3d workflow: reject transitions absent from the machine
+```
+
+Report **blockers immediately**, with the specific thing that is blocking. A silent agent is
+indistinguishable from a crashed one, and the difference costs someone an hour to establish.
+
+### The board belongs to the user
+
+- Agents **never close an issue, never merge a pull request, never move a milestone.** Post
+  `status: ready-for-review` and stop.
+- Commit trailers reference issues with `Refs: #<n>`. **Never `Closes`, `Fixes` or `Resolves`** -
+  GitHub acts on those keywords automatically on merge, which takes the decision away from the
+  person managing progress. `Fixes:` in its kernel sense (naming a broken commit by SHA, per
+  section 2) is unaffected and still correct.
+
+### Branches and pull requests
+
+- Branch name: `<type>/<issue>-<slug>`, e.g. `feat/14-workflow-engine`, `docs/22-theme-guides`.
+- Rebase onto `main` before marking ready for review. Never force-push a branch another agent has
+  based work on; if one has, coordinate in the thread first.
+- The pull request body states what changed, why, how it was verified, and `Refs: #<n>`. The
+  commits carry the detail (section 2); the PR body carries the summary.
+
+### Done means
+
+An issue is ready for review only when all of these hold. State them in the closing comment:
+
+1. Tests were written first and pass (section 5).
+2. CI is green, including `workflow:check` and `tokens:check`.
+3. Layering is intact (section 6) and nothing was duplicated to avoid a conflict (section 7).
+4. Sources are plain ASCII (section 4).
+5. Only the paths the issue owns were touched.
+
+### Never in an issue
+
+No secrets, keys, tokens, `.env` values, connection strings, or real borrower data. The
+repository is a public fork and issues are public with it. Refer to a secret by its variable
+name, never its value.
+
+## 4. Plain ASCII only
 
 **Source files, comments, commit messages, identifiers, and log strings are 7-bit ASCII.** No
 emoji. No smart quotes, en/em dashes, ellipsis characters, arrows, box-drawing characters, or
@@ -73,9 +167,10 @@ The narrow exception is **user-facing display text** (i18n message catalogues, s
 where the correct character is the correct character. Such text belongs in data or a message
 file, never inline in a component template or a string literal in logic.
 
-Enforce it: an ESLint rule and a `pre-commit` grep for `[^\x00-\x7F]` over `**/*.{ts,html,scss,sql,md,yml}`.
+Enforce it: an ESLint rule, plus a `pre-commit` grep for `[^\x00-\x7F]` across
+`**/*.{ts,html,scss,sql,md,yml}`.
 
-## 4. Test-driven development
+## 5. Test-driven development
 
 Write the failing test first. Red, green, refactor. Non-negotiable for:
 
@@ -94,7 +189,7 @@ things that would be wrong silently.
 A bug fix starts with a test that reproduces the bug. Always. That test is what stops it
 returning, and it belongs in the same commit as the fix.
 
-## 5. Layered design
+## 6. Layered design
 
 Dependencies point one way. A lower layer must never import from a higher one.
 
@@ -120,7 +215,7 @@ Consequences to hold to:
   is eligible, that rule is now untestable and duplicated. Components render; they do not decide.
 - **SQL lives in `packages/db` or a migration.** Not in a component, not in a handler.
 
-## 6. No duplication
+## 7. No duplication
 
 Two copies of a rule become two different rules. The specific traps in this codebase:
 
@@ -137,7 +232,7 @@ The counterweight: do not abstract on the first repetition. Three occurrences, o
 provably stay in lockstep, justifies the abstraction. A wrong abstraction costs more than the
 duplication it removed.
 
-## 7. Security baseline
+## 8. Security baseline
 
 - **RLS is the boundary.** Every table has row-level security on. The API is a convenience layer,
   never the only gate. Assume any client-reachable endpoint will be called with forged input.
@@ -151,7 +246,7 @@ duplication it removed.
 - **Money is integer minor units in TypeScript** and `numeric` in Postgres. No floats, ever.
 - Parameterised queries only. No string-built SQL.
 
-## 8. Style
+## 9. Style
 
 - TypeScript `strict`, plus `noUncheckedIndexedAccess`. No `any` - use `unknown` and narrow.
 - No non-null assertions (`!`) outside tests. If a value can be absent, handle it.
