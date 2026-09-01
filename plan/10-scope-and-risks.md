@@ -27,9 +27,10 @@ Building on an API that turns out to be unstable at hour six is the single most 
 build goes wrong.
 
 **Turborepo plus Angular builder caching.** Angular's own `.angular/cache` can interact badly with
-Turbo's outputs. Declare it in `outputs` ([`01-architecture.md`](01-architecture.md)) and verify
-a cold-versus-warm build early. Cheap to
-check in Phase 0, expensive to debug later.
+Turbo's outputs. Keep it out of `outputs` ([`01-architecture.md`](01-architecture.md)): it is
+incremental compile scratch space, not a build product, so tarring it into every cache entry buys
+size and no restore value. Gitignore it instead, and verify a cold-versus-warm build early. Cheap
+to check in Phase 0, expensive to debug later.
 
 **Supabase RLS recursion.** Policies that query `profile` from within a `profile` policy deadlock
 or recurse. Keep role lookups in a `security definer` helper function and test policies with the

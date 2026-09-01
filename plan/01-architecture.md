@@ -117,7 +117,7 @@ is worth knowing before Phase 0 rather than during it.
   "tasks": {
     "build": {
       "dependsOn": ["^build", "typecheck"],
-      "outputs": ["dist/**", ".angular/cache/**"],
+      "outputs": ["dist/**"],
       "env": ["SUPABASE_URL", "SUPABASE_ANON_KEY", "VERCEL_ENV"]
     },
     "typecheck": { "dependsOn": ["^typecheck"], "outputs": [] },
