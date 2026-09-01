@@ -28,11 +28,18 @@ Scope `platform` in [`../docs/03-agent-scopes.md`](../docs/03-agent-scopes.md).
 - `supabase init`, and **`supabase start` verified green** - twelve containers, about 42 s, per
   [`../docs/01-local-development.md`](../docs/01-local-development.md). The inner loop is local
   from here on.
-- CI green on an empty repo, both Vercel projects deploying.
+- CI green on an empty repo.
 
 Do this first and completely. A pipeline retrofitted at hour four is a pipeline that eats hour
 four. Proving the deploy path now is also what keeps local-first development honest - it is the
 one thing local-first must not defer (`../CLAUDE.md`, **Local-first development**).
+
+**Connecting the two Vercel projects to the repository is the immediate follow-up, not part of the
+phase.** Both projects are provisioned already, but connecting either before `apps/web` and
+`apps/api` exist produces a failed deployment on the spot, and branch protection cannot require a
+check GitHub has never observed. Both are the user's to perform once this phase lands
+(`../CLAUDE.md`, **The board belongs to the user**). Phase 0 is not finished until they are done -
+it is the same hour, in the same sitting, in the order the dependency forces.
 
 ## Phase 1 - Contracts: types, schema, RLS (2.0 h)
 
