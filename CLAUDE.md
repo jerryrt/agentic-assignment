@@ -42,7 +42,8 @@ the why, because that is the part that is lost otherwise.
 Wrap the body at 72 columns.
 
 Signed-off-by: Jerry Tian <jerryrt@gmail.com>
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MvY3mYfveuBRKnN6jUoftn
 ```
 
 Rules for the subject line:
