@@ -1,0 +1,64 @@
+{
+  // Shared compiler settings for every package in the workspace. Extend
+  // "@lj/tsconfig/node.json" or "@lj/tsconfig/angular.json" rather than this
+  // file directly, unless the package is environment-agnostic - the pure layer
+  // (packages/domain, packages/workflow, packages/rules) is, and extending this
+  // file is what keeps both the DOM and Node ambient globals out of it. A rule
+  // that cannot see `fetch` or `process` cannot quietly grow an I/O dependency.
+  //
+  // Values that merely restate a TypeScript 6.0 default are still written out.
+  // A default is a decision someone else gets to change; an explicit setting is
+  // one this repository has made. "strict" in particular must never be able to
+  // weaken because a future compiler flipped a default back.
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+
+    // Internal packages are consumed as TypeScript source through
+    // "exports": "./src/index.ts" (see plan/01-architecture.md). Only bundler
+    // resolution reads a package's "exports" field and accepts a .ts target;
+    // node16/nodenext resolution looks for the emitted .js and its .d.ts, which
+    // this repo deliberately never builds, so "@lj/domain" would fail to
+    // resolve under them. "module": "preserve" selects bundler resolution and
+    // leaves module syntax untouched for the downstream bundler - esbuild via
+    // @angular/build for the web app, Vercel's for the API - to emit.
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+
+    // Every file is transpiled in isolation, by esbuild or Vitest, never by a
+    // whole-program tsc emit. Emit-time cross-file type information therefore
+    // does not exist, and verbatimModuleSyntax forces the type-only imports to
+    // say so in the source instead of relying on the compiler to elide them.
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    // ES2022 is the floor: it is what @angular/build pins the browser bundle to,
+    // and Node 24 is far above it. node.json raises it where nothing has to run
+    // in a browser.
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    // Ambient type packages are opt-in, never ambient. With "types" unset,
+    // every @types/* package that happens to be installed anywhere in the
+    // workspace is injected into every program, so a package can compile
+    // against globals it does not depend on and only fail once the dependency
+    // graph changes. Each config below names exactly what it needs.
+    "types": [],
+
+    // tsc is a type checker in this repo, not a build step. Nothing it could
+    // emit is ever consumed: the pure packages ship source, and both apps are
+    // bundled. Leaving emit on would scatter .js files beside the sources the
+    // first time someone runs a bare `tsc -p .`.
+    "noEmit": true
+  }
+}

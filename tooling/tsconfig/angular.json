@@ -1,0 +1,44 @@
+{
+  // For apps/web and packages/ui. The compilerOptions below mirror what
+  // `ng new` emits at Angular 22.1.6 (verified against the tsconfig template in
+  // @schematics/angular@22.1.6) minus everything base.json already sets.
+  "extends": "./base.json",
+  "compilerOptions": {
+    // Angular's own decorators predate the TC39 proposal, so the legacy
+    // implementation is required. emitDecoratorMetadata is deliberately absent:
+    // Angular does not need it, and combining it with isolatedModules silently
+    // drops metadata - @angular/build warns about exactly that pairing.
+    "experimentalDecorators": true,
+
+    // Emit calls into tslib instead of inlining a copy of each helper in every
+    // file that needs one. tslib arrives as a dependency of @angular/core.
+    "importHelpers": true,
+
+    // Keep ES2022 even though the browsers in the Browserslist target support
+    // more. @angular/build overrides target to ES2022 whenever it is below
+    // that, and it also forces useDefineForClassFields to false when it does
+    // the override. Setting ES2022 here means the override never fires, so the
+    // class-field semantics stay the TypeScript default rather than depending
+    // on which branch of the builder ran.
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "angularCompilerOptions": {
+    // Legacy i18n message IDs are whitespace-sensitive and break on
+    // reformatting. Nothing here has translations to migrate.
+    "enableI18nLegacyMessageIdFormat": false,
+
+    // Type-check templates as strictly as the TypeScript in them. Without this
+    // a template is an untyped hole in an otherwise strict codebase, which is
+    // the opposite of what CLAUDE.md section 8 relies on when it says
+    // components render and do not decide.
+    "strictTemplates": true,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+
+    // Angular 22 scaffolds standalone components, but standalone is a per-class
+    // opt-out. Make the opt-out an error so the app cannot drift back into
+    // NgModules one component at a time.
+    "strictStandalone": true
+  }
+}

@@ -1,0 +1,22 @@
+{
+  // For code that runs on Node: apps/api, and any script or generator that
+  // needs the platform. The pure packages (domain, workflow, rules) extend
+  // base.json instead - see the note there.
+  "extends": "./base.json",
+  "compilerOptions": {
+    // Node 24.20.0, the pin in plan/01-architecture.md, implements every
+    // ES2025 library addition and syntax form probed for this pin (iterator
+    // helpers, Set methods, Promise.try, RegExp.escape, Float16Array, RegExp
+    // modifiers, duplicate named groups). ES2024 is one step back from that:
+    // it costs nothing available in practice and leaves headroom for the
+    // Vercel runtime, which is pinned only to the 24.x major and is not
+    // guaranteed to be the same patch release CI runs.
+    "target": "ES2024",
+    "lib": ["ES2024"],
+
+    // The only ambient globals this layer is allowed to see. No DOM: an API
+    // handler that reaches for `window` or `document` is a bug, and it should
+    // fail to typecheck rather than fail at runtime.
+    "types": ["node"]
+  }
+}
