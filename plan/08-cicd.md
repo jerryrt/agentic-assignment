@@ -25,7 +25,7 @@ jobs:
         with: { fetch-depth: 0 }        # turbo needs history to diff
       - uses: pnpm/action-setup@v6      # version comes from packageManager
       - uses: actions/setup-node@v7
-        with: { node-version: 24, cache: pnpm }
+        with: { node-version-file: .node-version, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo lint typecheck test build --filter=...[origin/main^]
       - name: generated artefacts still match their sources
@@ -58,9 +58,14 @@ gives preview URLs per PR for free, and re-implementing that in Actions is work 
 this size. The Actions pipeline is the quality gate; Vercel is the deployer. State that choice in
 the README so it reads as a decision, not an omission.
 
-Action and runtime versions come from the pinned toolchain table in `01-architecture.md`; do not
-set them independently here. `pnpm/action-setup` reads the version from `packageManager` in the
-root `package.json`, so pnpm is pinned in exactly one place.
+Runtime and tool versions come from the pinned toolchain table in `01-architecture.md`; do not set
+them independently here. Each is read from the one file that already holds it: `setup-node` takes
+`node-version-file: .node-version` rather than a literal, and `pnpm/action-setup` reads
+`packageManager` in the root `package.json`. A literal `node-version: 24` would float across patch
+releases and drift from the committed pin without anything reporting it.
+
+Action tag versions - `actions/checkout@v7`, `pnpm/action-setup@v6`, `actions/setup-node@v7` - are
+the exception: they are not in the toolchain table and live only here.
 
 Three details worth defending:
 
