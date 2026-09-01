@@ -65,10 +65,20 @@ create table application (
   furthest_step  text,                                -- resume hint
   submitted_at   timestamptz,
   decided_at     timestamptz,
-  decision_note  text,                                -- LENDER ONLY
-  risk_grade     text,                                -- LENDER ONLY
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
+);
+
+-- The lender's private reasoning, in its own table because row-level security
+-- filters rows and not columns -- see "Two roles, two truths" below.  That the
+-- application was decided, and when, stays on `application`: the fact is the
+-- borrower's business, only the reasoning is not.
+create table application_decision (
+  application_id uuid primary key references application(id) on delete cascade,
+  decision_note  text,
+  risk_grade     text,
+  decided_by     uuid references profile(id),
+  recorded_at    timestamptz not null default now()
 );
 
 -- the log ----------------------------------------------------------------
@@ -112,14 +122,27 @@ create view application_borrower_v as
   from application;                       -- note: no decision_note, no risk_grade
 
 create view application_lender_v as
-  select a.*, p.full_name as borrower_name,
-         (select count(*) from document_slot d
-           where d.application_id = a.id and d.state <> 'accepted') as open_doc_count
-  from application a join profile p on p.id = a.borrower_id;
+  select a.id, a.borrower_id, a.org_id, a.state, a.revision, a.data,
+         a.furthest_step, a.submitted_at, a.decided_at, a.created_at, a.updated_at,
+         d.decision_note, d.risk_grade, d.decided_by, d.recorded_at,
+         p.full_name as borrower_name
+  from application a
+  join profile p on p.id = a.borrower_id
+  left join application_decision d on d.application_id = a.id;
 ```
 
-Column-level omission in a view is honest and enforceable; hiding a field in the Angular
-template is not. The API returns whichever view matches `profile.role`.
+Both views list their columns rather than using `a.*`. A star is expanded once, when the view is
+defined, so it reads as though it tracks the table while silently meaning "the columns this table
+had that day" -- and a later phase adding `open_doc_count` needs `create or replace view` to
+append a column, which a star makes impossible.
+
+**A view is a shape, not a gate.** Row-level security filters rows; it cannot withhold a column.
+`application` is published by PostgREST, so a borrower holding a row policy on their own
+application could select the lender's note straight off the base table no matter what the borrower
+view omits. That is why the reasoning lives in its own table with its own policy, and it is the
+correction to an earlier version of this document which claimed the omission was itself
+enforceable. The API returns whichever view matches `profile.role`; the database enforces the
+boundary either way.
 
 The other half of "different truths" is **state labelling**. The same `state` value reads
 differently per audience, and that mapping lives in `packages/domain`:
@@ -136,6 +159,13 @@ One state, two vocabularies. Cheap to build, and it is exactly the point the bri
 
 RLS is on for every table. Policies are the security boundary; the API is a convenience layer,
 never the only gate.
+
+The policies below are the shape; the enforcement detail that is easy to get wrong is that a
+policy chooses rows, so anything that must be hidden at column granularity has to be a separate
+table or an explicit column grant. `application_decision` is the former. `profile.role` is the
+latter, and has to be: an `update` policy cannot express "you may edit yourself but not your own
+role", because `with check` sees only the new row and is satisfied just as happily by one whose
+role changed.
 
 ```sql
 alter table application enable row level security;
