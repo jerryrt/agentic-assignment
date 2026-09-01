@@ -8,7 +8,7 @@ Addresses assessment criteria #2 (repo/monorepo structure) and #4 (CI/CD).
 agentic-assignment/
 +-- apps/
 |   +-- web/                 Angular 22 app  -> Vercel project "lj-web"
-|   +-- api/                 Vercel serverless functions (Node 22, TS)
+|   +-- api/                 Vercel serverless functions (Node 24, TS)
 +-- packages/
 |   +-- domain/              Entities, Zod schemas, shared TS types. Zero deps.
 |   +-- workflow/            State machine engine + the 3 machine definitions
@@ -54,6 +54,39 @@ The tinted nodes are the pure layer.
 `domain`, `workflow`, and `rules` are **pure TypeScript with no I/O and no framework imports.**
 That is what lets the browser and the serverless function run byte-identical logic -- the client
 predicts the transition for instant UI, the server decides it. See `03`.
+
+## Pinned toolchain
+
+**Single source of truth for versions.** Every other document refers here rather than repeating a
+number. Verified against the npm registry and the Actions marketplace on 2026-09-01.
+
+| Tool | Pin | Why this one |
+|---|---|---|
+| Node | `24.20.0` (Active LTS, "Krypton") | Angular 22's engines accept `^22.22.3 \|\| ^24.15.0 \|\| >=26.0.0`. 26 is Current, not LTS; CI pins LTS. |
+| pnpm | `11.25.0` | Workspaces, strict `node_modules`. |
+| Turborepo | `2.10.12` | `turbo.json` uses the v2 `tasks` key, not the v1 `pipeline` key. |
+| Angular | `22.1.6` CLI / `22.1.4` core | Fixed by the brief. |
+| Angular Material + CDK | `22.1.4` | Must match `@angular/core` exactly, not by caret. |
+| **TypeScript** | **`6.0.3`** | **Not `latest`.** See the warning below. |
+| Tailwind CSS | `4.3.3` | v4 is CSS-first. There is no `tailwind.config.js`. |
+| Zod | `4.5.4` | |
+| Vitest | `4.1.11` | |
+| `@supabase/supabase-js` | `2.112.4` | |
+| Supabase CLI | `2.116.0` | Runs the local stack in Docker. |
+| Vercel CLI | `59.11.0` | Only needed to publish. |
+
+### The TypeScript trap
+
+npm's `latest` tag for TypeScript is **`7.0.2`**, and installing it breaks the build.
+`@angular/compiler-cli@22` declares `"typescript": ">=6.0 <6.1"`, so the supported version is
+**`6.0.3`**. Pin it exactly, in the root `package.json`, with no caret:
+
+```json
+"typescript": "6.0.3"
+```
+
+This is the kind of thing that looks fine until `ng build` fails with an unhelpful error, and it
+is worth knowing before Phase 0 rather than during it.
 
 ## Package manager & tooling
 

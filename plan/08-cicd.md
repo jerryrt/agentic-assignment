@@ -25,11 +25,11 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }        # turbo needs history to diff
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: pnpm/action-setup@v6      # version comes from packageManager
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo lint typecheck test build --filter=...[origin/main^]
       - name: workflow definition parity
@@ -40,8 +40,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: supabase/setup-cli@v1
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v3
+        with: { version: 2.116.0 }
       - run: supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
       - run: supabase db push
 ```
@@ -50,6 +51,10 @@ Deployment itself stays on **Vercel's Git integration** rather than a `vercel de
 gives preview URLs per PR for free, and re-implementing that in Actions is work with no payoff at
 this size. The Actions pipeline is the quality gate; Vercel is the deployer. State that choice in
 the README so it reads as a decision, not an omission.
+
+Action and runtime versions come from the pinned toolchain table in `01-architecture.md`; do not
+set them independently here. `pnpm/action-setup` reads the version from `packageManager` in the
+root `package.json`, so pnpm is pinned in exactly one place.
 
 Three details worth defending:
 
