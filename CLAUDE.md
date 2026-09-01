@@ -89,7 +89,7 @@ thread and against `git log` first.
 ### Ownership boundaries
 
 This is what makes parallel work safe, and it is the practical reason the layering rule in
-section 6 exists.
+section 7 exists.
 
 - **Every issue names the paths it owns**, in its body. An agent edits only those paths. If the
   issue does not name them, add them and say so before starting.
@@ -141,9 +141,9 @@ indistinguishable from a crashed one, and the difference costs someone an hour t
 
 An issue is ready for review only when all of these hold. State them in the closing comment:
 
-1. Tests were written first and pass (section 5).
+1. Tests were written first and pass (section 6).
 2. CI is green, including `workflow:check` and `tokens:check`.
-3. Layering is intact (section 6) and nothing was duplicated to avoid a conflict (section 7).
+3. Layering is intact (section 7) and nothing was duplicated to avoid a conflict (section 8).
 4. Sources are plain ASCII (section 4).
 5. Only the paths the issue owns were touched.
 
@@ -170,7 +170,59 @@ file, never inline in a component template or a string literal in logic.
 Enforce it: an ESLint rule, plus a `pre-commit` grep for `[^\x00-\x7F]` across
 `**/*.{ts,html,scss,sql,md,yml}`.
 
-## 5. Test-driven development
+## 5. Documentation renders on GitHub
+
+**GitHub is the review and audit interface for this project.** Plans, decisions, issue threads and
+diffs are all read in a browser, on github.com, by people who will not clone the repository. A
+document that only reads correctly in a local editor has not been delivered.
+
+Two consequences:
+
+### Prefer UML to ASCII art
+
+**Structure and behaviour are drawn as UML in Mermaid fences, never as hand-drawn ASCII boxes.**
+GitHub renders ```` ```mermaid ```` blocks natively, so the diagram is a first-class part of the
+document rather than a picture of one.
+
+| What you are showing | Use |
+|---|---|
+| A state machine, its transitions and guards | `stateDiagram-v2` |
+| Tables and their relationships | `erDiagram` |
+| A request crossing process boundaries | `sequenceDiagram` |
+| Package or module dependency direction | `graph TD` |
+| Types and their relationships | `classDiagram` |
+
+ASCII art was the wrong tool for all of these: it cannot be diffed meaningfully, it breaks the
+moment a label changes length, it carries no semantics an auditor or a tool can read, and it
+silently misaligns under proportional fonts. Mermaid source is still plain ASCII (section 4), so
+this rule and that one do not conflict.
+
+Two things are **not** ASCII art and stay as they are: a directory listing, and a fenced block of
+real code or SQL.
+
+The one genuine exception is a **UI wireframe**, which has no UML equivalent. Prefer linking a
+rendered image that is generated from real design tokens - see `design/preview.py` - and fall back
+to a small fenced sketch only when no such image exists.
+
+### Verify before pushing
+
+A diagram that does not parse renders on GitHub as a raw error block, in the one place the
+reviewer will see it. Check every Mermaid block renders before committing:
+
+```bash
+echo '{"args":["--no-sandbox"]}' > /tmp/pptr.json
+npx --yes @mermaid-js/mermaid-cli@11 -p /tmp/pptr.json -i diagram.mmd -o /tmp/out.svg
+```
+
+The same standard applies to anything else the browser has to render: relative image paths must
+resolve from the file that references them, and GitHub strips CSS from Markdown, so a document
+that needs colour must supply a committed image rather than styled markup.
+
+Choose layout for a narrow column. A wide `direction LR` diagram is unreadable once GitHub scales
+it to the content width; default top-to-bottom usually wins for anything with more than about six
+nodes.
+
+## 6. Test-driven development
 
 Write the failing test first. Red, green, refactor. Non-negotiable for:
 
@@ -189,7 +241,7 @@ things that would be wrong silently.
 A bug fix starts with a test that reproduces the bug. Always. That test is what stops it
 returning, and it belongs in the same commit as the fix.
 
-## 6. Layered design
+## 7. Layered design
 
 Dependencies point one way. A lower layer must never import from a higher one.
 
@@ -215,7 +267,7 @@ Consequences to hold to:
   is eligible, that rule is now untestable and duplicated. Components render; they do not decide.
 - **SQL lives in `packages/db` or a migration.** Not in a component, not in a handler.
 
-## 7. No duplication
+## 8. No duplication
 
 Two copies of a rule become two different rules. The specific traps in this codebase:
 
@@ -232,7 +284,7 @@ The counterweight: do not abstract on the first repetition. Three occurrences, o
 provably stay in lockstep, justifies the abstraction. A wrong abstraction costs more than the
 duplication it removed.
 
-## 8. Security baseline
+## 9. Security baseline
 
 - **RLS is the boundary.** Every table has row-level security on. The API is a convenience layer,
   never the only gate. Assume any client-reachable endpoint will be called with forged input.
@@ -246,7 +298,7 @@ duplication it removed.
 - **Money is integer minor units in TypeScript** and `numeric` in Postgres. No floats, ever.
 - Parameterised queries only. No string-built SQL.
 
-## 9. Style
+## 10. Style
 
 - TypeScript `strict`, plus `noUncheckedIndexedAccess`. No `any` - use `unknown` and narrow.
 - No non-null assertions (`!`) outside tests. If a value can be absent, handle it.
