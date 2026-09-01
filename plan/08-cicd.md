@@ -17,10 +17,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -69,7 +65,7 @@ root `package.json`, so pnpm is pinned in exactly one place.
 Three details worth defending:
 
 - `--filter=...[origin/main^]` - only packages whose dependency subgraph changed are linted,
-  typechecked, tested and built. Combined with remote cache, a README-only PR finishes in seconds.
+  typechecked, tested and built. A README-only PR touches no package and so runs nothing.
 - `fetch-depth: 0` - without full history the filter silently degrades to "everything." A common
   and invisible misconfiguration.
 - `workflow:check` and `tokens:check` - regenerate the transition SQL and the token stylesheets,

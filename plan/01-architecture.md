@@ -138,8 +138,12 @@ successful deploy's SHA and this one. Editing `packages/rules` rebuilds both app
 **Demonstrate it in the submission README** with two commits and two screenshots of the Vercel
 log ("Build cancelled -- no changes detected"). An unproven claim here is worth nothing.
 
-Remote cache: link the repo with `npx turbo login && npx turbo link` so CI and Vercel share
-artifacts. In GitHub Actions, pass `TURBO_TOKEN` / `TURBO_TEAM` -- see `08`.
+**Remote cache is deliberately not used.** The brief fixes Turborepo and requires that Vercel
+build only what changed; it never mentions caching, and no assessment criterion touches it.
+`turbo-ignore` answers the changed-only question from the dependency graph and a git diff, so it
+needs no cache, no account and no token. The local cache under `.turbo/` is still active and is
+what makes the inner loop fast. Adding a remote cache would buy CI seconds at the cost of a
+credential in the pipeline, which is the wrong trade under **Security** in `../CLAUDE.md`.
 
 ## Local dev
 

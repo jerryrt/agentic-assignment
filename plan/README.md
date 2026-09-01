@@ -14,7 +14,7 @@ and the scope honesty.
 | `05-option2-application.md` | Multi-step form, draft durability, eligibility matching |
 | `06-option3-servicing.md` | Loans, balances, credit release workflow, dual-role views |
 | `07-frontend.md` | Angular 22 structure, signals, forms, component library choice |
-| `08-cicd.md` | GitHub Actions to Vercel, migrations, remote cache |
+| `08-cicd.md` | GitHub Actions to Vercel, migrations, branch protection |
 | `09-build-order.md` | Phased execution with four submittable checkpoints |
 | `10-scope-and-risks.md` | Cut list, risks, and what goes in the submission README |
 
