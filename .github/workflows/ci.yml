@@ -18,6 +18,17 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version-file: .node-version, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # The row-level security probe in packages/db talks to a real Postgres
+      # with real policies, because that is the only thing that establishes a
+      # policy works. RLS is the security boundary (CLAUDE.md section 10), so a
+      # suite that runs only on a developer's machine is not a gate. Studio,
+      # imgproxy, the edge runtime, analytics and the pooler are excluded: none
+      # is reachable from a test, and pulling them costs more than they verify.
+      - uses: supabase/setup-cli@v3
+        with: { version: 2.116.0 }
+      - name: start the local supabase stack
+        run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,mailpit
+
       - run: pnpm turbo lint typecheck test build --filter=...[origin/main^]
 
       # workflow:check arrives with the transition codegen in Phase 2 and
