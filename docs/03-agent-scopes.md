@@ -16,7 +16,7 @@ is what an agent reads before its first edit.
 
 | # | Scope | Owns | Must not touch | Waits for | Est |
 |---|---|---|---|---|---|
-| 1 | **platform** | `tooling/`, `turbo.json`, `pnpm-workspace.yaml`, root `package.json`, `.github/workflows/`, Vercel project config | anything under `packages/` or `apps/` | - | 1.0 h |
+| 1 | **platform** | `tooling/`, `turbo.json`, `pnpm-workspace.yaml`, root `package.json`, `.github/workflows/`, Vercel project config, `supabase/config.toml`, and the **initial scaffold only** of `apps/*` and `packages/*` | the *contents* of any app or package once scaffolded | - | 1.0 h |
 | 2 | **contracts** | `packages/domain/`, `supabase/migrations/0001_init.sql`, `supabase/seed.sql` | every consumer of the types it defines | platform | 1.0 h |
 | 3 | **workflow** | `packages/workflow/`, the generated transitions migration | `packages/domain` (consume only) | contracts | 1.5 h |
 | 4 | **rules** | `packages/rules/` | `packages/workflow` | contracts | 1.0 h |
@@ -29,7 +29,16 @@ is what an agent reads before its first edit.
 | 11 | **feature-servicing** | `apps/web/src/app/features/servicing/` **and** `features/lender/` | as above | web-core, api | 2.0 h |
 | 12 | **qa** | `apps/web/e2e/`, `playwright.config.ts` | application source - it reports, it does not fix | the features it exercises | 1.5 h |
 
-### Two boundaries that are deliberate
+### Three boundaries that are deliberate
+
+**platform scaffolds every app and package, then never returns.** Phase 0 in
+[`../plan/09-build-order.md`](../plan/09-build-order.md) requires an Angular app, an API and five
+empty packages to exist before any other scope can start, so platform must create them; a scope
+that may not touch `apps/` or `packages/` at all cannot execute its own phase. The line is
+scaffold versus contents. Scaffold is the manifest, the tsconfig, and an `index.ts` that exports
+nothing - enough that the workspace graph resolves and `typecheck` passes. Contents are what the
+owning scope writes afterwards. Once a package has an owner, platform edits it only through that
+owner's issue, exactly like any other contended file.
 
 **Servicing and lender are one scope, not two.** Option 3's whole subject is two roles reading
 different truths from one record (`../plan/06-option3-servicing.md`). Splitting borrower and
