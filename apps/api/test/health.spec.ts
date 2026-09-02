@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { GET } from '../api/health.ts';
+import { GET } from '../src/routes/health.ts';
 
 /**
  * The route is a Web Handler, so the test calls it exactly as the Vercel

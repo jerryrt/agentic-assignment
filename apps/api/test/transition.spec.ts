@@ -26,7 +26,7 @@ import { createServiceRoleClient, type ServiceRoleClient } from '@lj/db/service-
 import { RuleResultSchema } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { POST } from '../api/transition.ts';
+import { POST } from '../src/routes/transition.ts';
 
 const TRANSITION_URL = 'https://lj-api.example/api/transition';
 

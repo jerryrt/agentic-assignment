@@ -18,8 +18,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
-import { GET } from '../api/health.ts';
-import { POST } from '../api/transition.ts';
+import { GET } from '../src/routes/health.ts';
+import { POST } from '../src/routes/transition.ts';
 
 const DEFAULT_PORT = 3001;
 const HEALTH_PATH = '/api/health';
