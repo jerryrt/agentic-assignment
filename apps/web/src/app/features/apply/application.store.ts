@@ -16,7 +16,7 @@ import {
   applicationStepIndex,
   deriveApplicationFigures,
   isApplicationStep,
-  moneyFromNumericString,
+  readNumericMoney,
   parseApplicationData,
   unmetRequirements,
   type ApplicationBorrowerView,
@@ -24,7 +24,6 @@ import {
   type ApplicationFigures,
   type ApplicationRequirement,
   type ApplicationStep,
-  type Money,
   type RuleResult,
 } from '@lj/domain';
 import { getBorrowerApplication, listActiveLoanProducts, saveApplicationDraft } from '@lj/db';
@@ -108,32 +107,6 @@ export const DRAFT_STORAGE = new InjectionToken<Storage | null>('lj.draft-storag
   },
 });
 
-/**
- * `numeric` as PostgREST renders it, without a float multiplication.
- *
- * The same conversion apps/api makes, for the same reason: money.ts warns that
- * `Math.trunc(value * 100)` loses a cent on the values nobody checks. Rendering
- * the value back to its shortest round-tripping decimal recovers the digits
- * exactly for everything `numeric(14,2)` can hold, and @lj/domain's exact
- * parser does the rest. `String` rather than a cast because the generated types
- * say `number` while money.ts says PostgREST emits a string; this is correct
- * either way, which is the point.
- *
- * DUPLICATED, knowingly, with `eligibilityProducts` in
- * apps/api/lib/application-subject.ts. It cannot be shared today: @lj/db sits
- * below @lj/rules so neither can own a conversion between their types, and the
- * only layer above both is the delivery layer, which is two applications. The
- * fix is a structural overload in @lj/rules that takes a product row without
- * importing @lj/db -- recorded on the issue rather than done here, because
- * packages/rules is not this scope's to edit and apps/api is in flight.
- */
-function moneyFromPostgrestNumeric(value: number | string): Money | null {
-  try {
-    return moneyFromNumericString(String(value));
-  } catch {
-    return null;
-  }
-}
 
 /**
  * A product whose criteria do not parse is DROPPED, not skipped into the
@@ -148,13 +121,20 @@ function eligibilityProducts(rows: readonly LoanProduct[]): EligibilityProduct[]
     if (!criteria.ok) {
       continue;
     }
-    products.push({
-      id: row.id,
-      name: row.name,
-      minAmount: row.min_amount === null ? null : moneyFromPostgrestNumeric(row.min_amount),
-      maxAmount: row.max_amount === null ? null : moneyFromPostgrestNumeric(row.max_amount),
-      criteria: criteria.criteria,
-    });
+    // Dropped rather than admitted with no band, for the reason @lj/domain's
+    // readNumericMoney gives: a null minimum reads as "no floor" and widens
+    // who qualifies. Dropping can only ever make an applicant less eligible.
+    try {
+      products.push({
+        id: row.id,
+        name: row.name,
+        minAmount: readNumericMoney(row.min_amount),
+        maxAmount: readNumericMoney(row.max_amount),
+        criteria: criteria.criteria,
+      });
+    } catch {
+      continue;
+    }
   }
   return products;
 }

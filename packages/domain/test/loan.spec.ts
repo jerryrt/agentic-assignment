@@ -94,11 +94,19 @@ describe('LoanSchema', () => {
     expect(LoanSchema.safeParse({ ...LOAN, approved_limit: '250000.005' }).success).toBe(false);
   });
 
-  // A float is what the ledger exists to keep out. PostgREST renders numeric as
-  // text; a number here means the value came from somewhere else, and guessing
-  // what it meant is how a wrong amount gets stored.
-  it('refuses a limit that arrives as a JSON number', () => {
-    expect(LoanSchema.safeParse({ ...LOAN, approved_limit: 250_000 }).success).toBe(false);
+  // Written first as "refuses a limit that arrives as a JSON number", on the
+  // strength of money.ts claiming PostgREST renders numeric as text. It does
+  // not -- a plain select sends a number, and only `column::text` sends a
+  // string (#57). A limit arriving as a number is the ordinary case, not the
+  // suspicious one, and it is exact: 250000.00 is six significant digits and a
+  // double round-trips fifteen.
+  it('reads a limit in either spelling PostgREST sends', () => {
+    expect(LoanSchema.parse({ ...LOAN, approved_limit: 250_000 }).approved_limit).toBe(
+      25_000_000,
+    );
+    expect(LoanSchema.parse({ ...LOAN, approved_limit: '250000.00' }).approved_limit).toBe(
+      25_000_000,
+    );
   });
 
   it('refuses a status no lending system declares', () => {
