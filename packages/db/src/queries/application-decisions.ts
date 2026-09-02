@@ -17,9 +17,9 @@
  * and deliberately so.
  */
 
-import type { DatabaseClient } from '../client';
-import type { Database } from '../database.types';
-import { unwrapMaybe } from '../errors';
+import type { DatabaseClient } from '../client.js';
+import type { Database } from '../database.types.js';
+import { unwrapMaybe } from '../errors.js';
 
 /** Postgres unique_violation; here it means the decision already exists. */
 const UNIQUE_VIOLATION = '23505';

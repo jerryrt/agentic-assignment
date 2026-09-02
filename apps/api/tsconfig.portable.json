@@ -1,0 +1,25 @@
+/* The portability guard.
+ *
+ * The workspace compiles under `bundler` module resolution, which does not
+ * require a relative import to name its extension. Vercel type-checks a
+ * serverless function under `nodenext`, which does. So a package can resolve
+ * everywhere in this repository and still fail to resolve once deployed -- and
+ * that is not a theoretical gap. It reached production once: the build printed
+ * sixty-five errors, deployed anyway, and every request to the function
+ * returned 500 before a line of handler code ran.
+ *
+ * This configuration re-checks the API and everything it imports under the
+ * stricter resolution, so the gap is closed by a check that runs in CI rather
+ * than by remembering. It only ever reports; nothing is emitted.
+ */
+{
+  "extends": "@lj/tsconfig/base.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "noEmit": true,
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["api/**/*.ts", "lib/**/*.ts"]
+}

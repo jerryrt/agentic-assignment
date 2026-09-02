@@ -7,9 +7,9 @@
  * set for the first one to drift from (CLAUDE.md section 9).
  */
 
-import type { DatabaseClient } from '../client';
-import type { Database } from '../database.types';
-import { unwrapList, unwrapMaybe } from '../errors';
+import type { DatabaseClient } from '../client.js';
+import type { Database } from '../database.types.js';
+import { unwrapList, unwrapMaybe } from '../errors.js';
 
 export type LoanProduct = Database['public']['Tables']['loan_product']['Row'];
 

@@ -10,7 +10,7 @@
     "dev": "node --import ./dev/ts-source-resolution.ts --watch dev/local-server.ts",
     "lint": "eslint .",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.portable.json"
   },
   "dependencies": {
     "@lj/db": "workspace:*",
