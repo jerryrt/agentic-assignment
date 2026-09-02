@@ -1,0 +1,17 @@
+{
+  "//": [
+    "The browser posts to a relative /api/transition, because the deployed web",
+    "project rewrites that path to the API project (see vercel.json). This file",
+    "gives the dev server the same shape, so the inner loop exercises the same",
+    "URL the deployed application does rather than a second one that works for",
+    "different reasons.",
+    "",
+    "apps/api's dev server listens on 3001 (see its dev/local-server.ts).",
+    "`pnpm dev` starts both through turbo."
+  ],
+  "/api": {
+    "target": "http://127.0.0.1:3001",
+    "secure": false,
+    "changeOrigin": false
+  }
+}

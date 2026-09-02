@@ -79,7 +79,14 @@
             // pnpm's isolated node_modules they cannot.  The cost is a slower
             // cold start; measured at under eight seconds, against a dev server
             // that did not work at all.
-            "prebundle": false
+            "prebundle": false,
+            // The browser posts to a relative /api/transition. Deployed, the
+            // web project rewrites that to the API project (vercel.json); here
+            // it is proxied to the API's own dev server, so the inner loop
+            // exercises the same URL rather than a second one that works for
+            // different reasons. Without it the POST 404s against the dev
+            // server, which is what it did (issue #38).
+            "proxyConfig": "proxy.conf.json"
           },
           "configurations": {
             "production": {
