@@ -7,7 +7,7 @@
  * decision made about them. That distinction is what keeps CLAUDE.md section 8
  * intact -- a delivery layer may adapt data, it may not adjudicate it.
  *
- * The payload's shape is PROVISIONAL. `supabase/seed.sql` says so, and the
+ * The payload's shape is PROVISIONAL. `supabase/migrations/0004_demo_data.sql` says so, and the
  * multi-step form in Phase 5 owns it; packages/domain has no
  * ApplicationDataSchema yet. When it gains one, this file moves down into
  * packages/domain and this comment goes with it. Until then it is written to

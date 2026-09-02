@@ -108,7 +108,7 @@ export interface Extractor {
 }
 ```
 
-- `StubExtractor` (shipped) -- reads a sidecar convention: PDFs seeded in `supabase/seed.sql` have
+- `StubExtractor` (shipped) -- reads a sidecar convention: PDFs seeded in `supabase/migrations/0004_demo_data.sql` have
   known values; uploaded files get a deterministic pseudo-extraction derived from the filename
   (`deed_1240ac_smith-farms.pdf` -> `{ total_acres: 1240, owner_name: "Smith Farms" }`), plus a
   **manual correction panel** so any value can be typed in.

@@ -18,7 +18,7 @@ import {
 const money = moneyFromNumericString;
 
 /**
- * The seeded Operating Line of Credit from supabase/seed.sql, in the encoding
+ * The seeded Operating Line of Credit from supabase/migrations/0004_demo_data.sql, in the encoding
  * this package accepts: thresholds are integers in the field's own unit, so a
  * coverage ratio floor of 1.25 is 12500 basis points.
  */

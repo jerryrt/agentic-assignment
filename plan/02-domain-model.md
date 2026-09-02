@@ -190,7 +190,7 @@ moves only via the API's service role. See `03`.
 
 ## Seed data
 
-`supabase/seed.sql` must produce a demo that is walkable in 60 seconds during the CTO session:
+`supabase/migrations/0004_demo_data.sql` must produce a demo that is walkable in 60 seconds during the CTO session:
 
 - 1 lender org, 2 loan products with genuinely different criteria (an operating line with a
   DSCR floor; an equipment loan with an LTV cap) so eligibility visibly diverges.

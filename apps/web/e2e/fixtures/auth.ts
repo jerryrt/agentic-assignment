@@ -76,7 +76,7 @@ export async function signIn(stack: LocalStack, account: Account): Promise<Token
     const detail = await response.text();
     throw new Error(
       `sign-in failed for ${account.email} (${response.status}). ` +
-        `The seeded accounts come from supabase/seed.sql; run "pnpm db:reset" if the database is empty. ` +
+        `The seeded accounts come from supabase/migrations/0004_demo_data.sql; run "pnpm db:reset" if the database is empty. ` +
         `Response: ${detail.slice(0, 300)}`,
     );
   }
@@ -90,7 +90,7 @@ export async function signIn(stack: LocalStack, account: Account): Promise<Token
 /**
  * Re-issues every role's session, in place.
  *
- * Needed after a database reset, and the reason is not obvious: supabase/seed.sql
+ * Needed after a database reset, and the reason is not obvious: supabase/migrations/0004_demo_data.sql
  * deletes and recreates auth.users, which cascades to auth.sessions, so every
  * token saved before the reset names a session that no longer exists.  The JWT
  * still parses and still looks valid; GoTrue answers 403 and the browser looks

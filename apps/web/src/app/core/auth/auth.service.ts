@@ -180,13 +180,26 @@ export class SupabaseAuthService {
     if (client === null) {
       return { ok: false, message: this.configurationError ?? 'Authentication is unavailable.' };
     }
-    const { error } = await client.auth.signUp({
+    const { data, error } = await client.auth.signUp({
       email,
       password,
       options: { data: { full_name: fullName } },
     });
     if (error !== null) {
       return { ok: false, message: messageOf(error, 'Could not create the account.') };
+    }
+    // A project with email confirmation enabled answers a successful signup with
+    // a user and no session: the account exists but cannot sign in until the
+    // address is confirmed. Reporting that as success is what made the deployed
+    // site accept a registration and then refuse the very credentials it had
+    // just been given, with nothing said in between.
+    if (data.session === null) {
+      return {
+        ok: false,
+        message:
+          'The account was created but needs its email address confirmed before it can sign in, ' +
+          'and this demo has no mail service to confirm through. Use one of the demo accounts instead.',
+      };
     }
     await this.adoptSession();
     return { ok: true };

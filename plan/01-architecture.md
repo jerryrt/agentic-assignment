@@ -17,7 +17,8 @@ agentic-assignment/
 |   +-- ui/                  Shared Angular standalone components (design primitives)
 +-- supabase/
 |   +-- migrations/          Timestamped SQL, checked in
-|   +-- seed.sql             Demo lender, products, borrower, one funded loan
+|   |                        including the demo accounts, which must exist in
+|   |                        the deployed demo and so cannot be a seed
 +-- tooling/
 |   +-- eslint-config/
 |   +-- tsconfig/            base.json, angular.json, node.json

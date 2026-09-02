@@ -38,7 +38,7 @@ That is the whole setup cost. What you get for free:
 | `failOnConsoleError` (option) | Defaults to `true`. Every test fails if the browser logged an error, without having to ask. |
 | `freezeClock(page, when)` | A fixed wall clock, for anything that renders a date or an expiry. |
 
-The accounts are the seeded ones from [`supabase/seed.sql`](../../../supabase/seed.sql):
+The accounts are the seeded ones from [`supabase/migrations/0004_demo_data.sql`](../../../supabase/migrations/0004_demo_data.sql):
 `borrower@example.test` holds a draft stopped mid-form and an approved application,
 `grower@example.test` holds one under review, and `lender@example.test` is the lender for both.
 `fixtures/accounts.ts` names what each one is for.
@@ -52,7 +52,7 @@ graph TD
     C --> D["sign in each role via /auth/v1/token"]
     D --> E[".auth/borrower.json<br/>.auth/lender.json<br/>.auth/grower.json"]
     E --> F["project: chromium"]
-    F --> G["per spec file:<br/>re-apply supabase/seed.sql"]
+    F --> G["per spec file:<br/>re-apply supabase/migrations/0004_demo_data.sql"]
     G --> H["per test: role contexts,<br/>console guard"]
     H --> I["failure: trace, video,<br/>screenshot, HTML report"]
 ```
@@ -80,7 +80,7 @@ Each is argued where it is implemented; this is the index.
 - **Reset per spec file, one worker** -- `fixtures/database.ts`. The seed holds the interesting
   states and journeys mutate them, so files must not inherit each other's leftovers. There is one
   local Postgres, so a second worker would reset the database under the first.
-- **Reset means re-applying `supabase/seed.sql`, not `supabase db reset`** -- same file. The seed
+- **Reset means re-applying `supabase/migrations/0004_demo_data.sql`, not `supabase db reset`** -- same file. The seed
   deletes its own previous generation by fixed id, so it is repeatable, and it does not replay
   migrations or destroy anything else on the stack.
 - **No retries, ever** -- `playwright.config.ts`. A retry turns a flake into a green run.
