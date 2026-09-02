@@ -1,0 +1,37 @@
+-- One live loan per application.
+--
+-- plan/06-option3-servicing.md and packages/domain both treat "a funded
+-- application becomes one loan" as a fact.  Until this statement it was not
+-- one: loan.application_id carried a foreign key and no uniqueness, so the
+-- invariant rested entirely on the application machine refusing a second
+-- `fund` and on the revision guard catching a concurrent one.  Both are real
+-- defences and both live in the delivery layer, where a bug in either is a
+-- second credit limit.
+--
+-- Confirmed by trying it rather than by reading the DDL: a plain
+-- `insert into loan ... select ... from loan limit 1` succeeded.
+--
+-- This schema already makes invariants of this shape structural, and says why
+-- each time -- unique (application_id, code) on document_slot so a pack cannot
+-- be doubled by a check-then-insert race; unique (application_id, revision) on
+-- eligibility_snapshot so a retry cannot leave two answers; unique (release_id)
+-- on ledger_entry so a retried disbursement is refused by the database rather
+-- than by the API remembering to look first.  A second loan is worse than any
+-- of those: every balance in loan_balance_v is grouped BY LOAN, so nothing
+-- downstream would report a total as wrong.  It would simply be wrong, quietly,
+-- in the direction of more available credit.
+--
+-- PARTIAL, and the partiality is the whole design decision.  A blanket unique
+-- constraint would forbid, forever and on the strength of a phase that has no
+-- refinancing in it, the perfectly ordinary operation of closing a facility and
+-- opening a replacement against the same application.  What is true today is
+-- narrower and worth stating exactly: an application has at most one loan that
+-- is not closed.  A later phase that adds refinancing needs no migration to
+-- undo, because this never forbade it.
+--
+-- A unique INDEX rather than a table constraint, because Postgres has no
+-- partial unique constraint -- only a partial unique index, which enforces the
+-- same thing and is what a constraint compiles to anyway.
+create unique index loan_one_live_per_application
+  on public.loan (application_id)
+  where status <> 'closed';

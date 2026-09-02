@@ -1392,6 +1392,64 @@ describe('the document pack', () => {
   });
 });
 
+/**
+ * A schema invariant rather than a policy, and it sits here because this is the
+ * only suite that talks to a real database.
+ *
+ * plan/06 and packages/domain both treat "a funded application becomes one
+ * loan" as a fact. Until 0009 it was not one -- application_id carried a
+ * foreign key and no uniqueness, so the invariant rested entirely on the
+ * application machine refusing a second `fund`. A second loan is a second
+ * credit limit, and every balance in loan_balance_v is grouped BY LOAN, so
+ * nothing downstream would have reported a total as wrong. It would simply
+ * have been wrong, in the direction of more available credit.
+ */
+describe('one live loan per application', () => {
+  it('refuses a second loan against an application that already has one', async () => {
+    // `as never` for the reason the loan fixture above uses it: the generated
+    // Insert type says approved_limit is a number, and money is written as the
+    // exact decimal string PostgREST parses without a float in the way.
+    const { error } = await service.from('loan').insert({
+      application_id: appReviewed,
+      borrower_id: borrowerA.id,
+      org_id: orgAlpha,
+      product_id: productAlpha,
+      approved_limit: '100000.00',
+      rate_bps: 0,
+    } as never);
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe('23505');
+  });
+
+  // The index is PARTIAL on purpose. Closing a facility and opening a
+  // replacement against the same application is an ordinary lending operation,
+  // and a blanket constraint would have forbidden it forever on the strength of
+  // a phase that has no refinancing in it. This is the half that says so.
+  it('allows a replacement once the first is closed', async () => {
+    await service.from('loan').update({ status: 'closed' }).eq('id', loanA);
+    const replacement = await service
+      .from('loan')
+      .insert({
+        application_id: appReviewed,
+        borrower_id: borrowerA.id,
+        org_id: orgAlpha,
+        product_id: productAlpha,
+        approved_limit: '100000.00',
+        rate_bps: 0,
+      } as never)
+      .select('id')
+      .single();
+
+    expect(replacement.error).toBeNull();
+
+    // Put the fixture back for whatever runs after this.
+    if (replacement.data !== null) {
+      await service.from('loan').delete().eq('id', replacement.data.id);
+    }
+    await service.from('loan').update({ status: 'active' }).eq('id', loanA);
+  });
+});
+
 describe("a document slot's transition history", () => {
   // THE POSITIVE CONTROL, and the reason the refusals below mean anything.
   // Before 0008 this failed: no policy admitted a document_slot event, so the
