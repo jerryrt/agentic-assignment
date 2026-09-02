@@ -2,9 +2,10 @@ import { computed, DestroyRef, inject, Injectable, signal, type Signal } from '@
 import type { AppRole, LabelAudience } from '@lj/domain';
 import { audienceForRole } from '@lj/domain';
 import type { DatabaseClient, Profile } from '@lj/db';
-import { createAnonClient, getProfile } from '@lj/db';
+import { getProfile } from '@lj/db';
 
 import { SUPABASE_CONFIG, type SupabaseConfigResult } from '../config/supabase-config.ts';
+import { DATABASE_CLIENT } from '../data/database-client.ts';
 
 /**
  * Supabase Auth, for real: signup and login against GoTrue, a session that
@@ -80,8 +81,12 @@ export class SupabaseAuthService {
    * Null when the build carried no configuration. The alternative -- throwing
    * from the constructor -- takes the whole application down and reports the
    * cause to a console rather than to the person looking at the blank page.
+   *
+   * Injected rather than constructed: a feature needs a client too, and two
+   * calls to createAnonClient would persist two copies of one session. See
+   * ../data/database-client.ts.
    */
-  private readonly client: DatabaseClient | null;
+  private readonly client: DatabaseClient | null = inject(DATABASE_CLIENT);
 
   private readonly currentIdentity = signal<AuthIdentity | null>(null);
   private readonly currentProfile = signal<Profile | null>(null);
@@ -121,7 +126,6 @@ export class SupabaseAuthService {
 
   constructor() {
     this.configurationError = this.configResult.ok ? null : unconfiguredMessage(this.configResult);
-    this.client = this.configResult.ok ? createAnonClient(this.configResult.config) : null;
 
     if (this.client === null) {
       this.currentStatus.set('unconfigured');

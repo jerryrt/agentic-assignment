@@ -111,7 +111,7 @@ here or set them independently in CI.
 One trap worth repeating because it is silent: npm's `latest` TypeScript is a major release that
 Angular 22 refuses (`"typescript": ">=6.0 <6.1"`). Pin `6.0.3` exactly.
 
-### Four traps that cost real time, in the order they bite
+### Five traps that cost real time, in the order they bite
 
 Each of these was found by something failing in a way that named the wrong cause. They are written
 here rather than left in issue threads because every one of them will be met again.
@@ -135,6 +135,31 @@ is content with a specifier it will never emit.
 transpiles the entry and leaves imports to resolve on the server, where a pnpm-symlinked package
 is simply absent. `apps/api` therefore bundles its handlers -- see `../plan/01-architecture.md`.
 The failure is a 500 with no application log, because nothing ran.
+
+**The dev server does not compile the workspace packages; the production build
+does.** Vite pre-bundles whatever it reaches through `node_modules`, and pnpm
+reaches the workspace packages through symlinks there, so `ng serve` handed
+`@lj/ui` to plain esbuild with no Angular compilation. Its components then asked
+for a JIT compiler that is deliberately not in the bundle, and every screen using
+one rendered blank -- with the reason only in the browser console:
+
+```
+JIT compilation failed for component class LjStateBadge
+```
+
+`ng build` never had the problem, because it compiles those sources as part of
+its own program. So `build`, `typecheck`, `lint` and the unit suite were all
+green against a dev server that could not render a screen. `"prebundle": false`
+on the `serve` target in `apps/web/angular.json` is the fix; the narrower
+`{"exclude": [...]}` form replaces the builder's own dependency configuration and
+leaves `zod` and `@supabase/supabase-js` unresolvable from the app root, because
+they are dependencies of `@lj/domain` and `@lj/db` rather than of `apps/web`.
+
+This one is the argument for **Local-first development** made against itself:
+the inner loop was broken and four green checks said otherwise, because none of
+them ran the thing. It was found by driving the app in a browser. The unit-test
+builder has the same defect and accepts no `prebundle` option, so a spec in
+`apps/web` still cannot render a `@lj/ui` component; that is tracked separately.
 
 **Local auth and hosted auth differ.** `supabase/config.toml` sets
 `enable_confirmations = false`, so a local signup logs straight in. The hosted project confirms
