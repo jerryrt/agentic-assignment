@@ -103,6 +103,33 @@ export function amountToMoney(text: string): Money | null {
   }
 }
 
+/**
+ * What can actually be written to `credit_release`, or null.
+ *
+ * The table carries `check (amount > 0)` and a `purpose` that is `not null` and
+ * refused empty by `CreditReleaseSchema`, so there is a window in which
+ * something has been typed and no row can hold it. This function is the test
+ * for that window, and it is why the row is created at the first keystroke that
+ * CAN be stored rather than at the first keystroke: inventing an amount to
+ * satisfy the check would be fabricating the borrower's request, which is worse
+ * to have in a lending record than a URL that changes a moment later. The
+ * seatbelt covers the gap.
+ *
+ * A trimmed purpose, because ' ' passes `not null` and means nothing, and
+ * because the value that is stored should be the value that was compared.
+ */
+export function storableCompose(
+  amountText: string,
+  purpose: string,
+): { readonly amount: Money; readonly purpose: string } | null {
+  const amount = amountToMoney(amountText);
+  const trimmed = purpose.trim();
+  if (amount === null || amount <= 0 || trimmed === '') {
+    return null;
+  }
+  return { amount, purpose: trimmed };
+}
+
 export function readComposeSnapshot(
   storage: Storage | null,
   loanId: string,

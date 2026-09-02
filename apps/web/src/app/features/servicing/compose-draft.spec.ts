@@ -4,6 +4,7 @@ import {
   composeSnapshotsFor,
   reconcileCompose,
   readComposeSnapshot,
+  storableCompose,
   writeComposeSnapshot,
   type ComposeSnapshot,
 } from './compose-draft.ts';
@@ -60,10 +61,11 @@ describe('the compose seatbelt', () => {
   });
 
   /**
-   * The row is created on the first keystroke, so there is a window -- one
-   * keystroke wide, or wider if the insert fails -- in which there is typing and
-   * no release to key it to. It is kept under the loan instead, and moved when
-   * the row arrives.
+   * The row is created as soon as what has been typed can be stored, so there
+   * is a window -- from the first keystroke until there is an amount and a
+   * purpose, and longer if the insert fails -- in which there is typing and no
+   * release to key it to. It is kept under the loan instead, and moved when the
+   * row arrives.
    */
   it('keeps typing that has no release row yet', () => {
     const storage = new MemoryStorage();
@@ -161,6 +163,29 @@ describe('reconciling the seatbelt with the server', () => {
     expect(
       reconcileCompose(null, { revision: 0, amountText: '', purpose: '' }),
     ).toEqual({ source: 'server' });
+  });
+});
+
+describe('what can be stored', () => {
+  it('is nothing until there is a positive amount and a purpose', () => {
+    expect(storableCompose('', '')).toBeNull();
+    expect(storableCompose('12000', '')).toBeNull();
+    expect(storableCompose('12000', '   ')).toBeNull();
+    expect(storableCompose('', 'Seed and fertiliser')).toBeNull();
+    expect(storableCompose('half typed', 'Seed and fertiliser')).toBeNull();
+  });
+
+  /** `credit_release` carries `check (amount > 0)`; zero is not a request. */
+  it('refuses a request for nothing', () => {
+    expect(storableCompose('0', 'Seed and fertiliser')).toBeNull();
+    expect(storableCompose('0.00', 'Seed and fertiliser')).toBeNull();
+  });
+
+  it('trims the purpose it will store, because a space is not a purpose', () => {
+    expect(storableCompose('12,000', '  Seed and fertiliser ')).toEqual({
+      amount: 1_200_000,
+      purpose: 'Seed and fertiliser',
+    });
   });
 });
 
