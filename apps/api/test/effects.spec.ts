@@ -32,6 +32,23 @@ describe('what the application machine declares', () => {
       { kind: 'create_document_slots' },
     ]);
   });
+
+  /**
+   * The other effect whose absence would be silent. An application at `funded`
+   * with no loan behind it says money moved when nothing did, and nothing in
+   * the application's own row would show it.
+   */
+  it('creates the loan when a lender funds an approved application', () => {
+    const outcome = apply(
+      applicationMachine,
+      'approved',
+      'fund',
+      'lender',
+      NO_RULES_EVALUATED,
+    );
+
+    expect(outcome.ok === true && outcome.effects).toEqual([{ kind: 'create_loan' }]);
+  });
 });
 
 describe('the effects this API can run', () => {
@@ -55,15 +72,19 @@ describe('the effects this API can run', () => {
     expect(unrunnableEffects([{ kind: 'write_eligibility_snapshot' }])).toEqual([]);
   });
 
+  it('opens the facility the fund transition declares', () => {
+    expect(RUNNABLE_EFFECT_KINDS.has('create_loan')).toBe(true);
+    expect(unrunnableEffects([{ kind: 'create_loan' }])).toEqual([]);
+  });
+
   /**
-   * The refusal that matters more than the runner. `create_loan` needs a `loan`
-   * table that does not exist, so funding an application would otherwise move
-   * it to a state that says money changed hands when nothing did -- discovered
-   * later, by whoever reconciles.
+   * The refusal that matters more than the runner. `post_ledger_entry` has no
+   * runner yet, so disbursing a release would otherwise move it to `funded`
+   * with nothing on the ledger -- money said to have moved that no statement
+   * shows, discovered later by whoever reconciles.
    */
   it('names an effect it has no runner for, rather than skipping it', () => {
-    expect(RUNNABLE_EFFECT_KINDS.has('create_loan')).toBe(false);
-    expect(unrunnableEffects([{ kind: 'create_loan' }])).toEqual(['create_loan']);
+    expect(RUNNABLE_EFFECT_KINDS.has('post_ledger_entry')).toBe(false);
     expect(unrunnableEffects([{ kind: 'post_ledger_entry' }])).toEqual([
       'post_ledger_entry',
     ]);
@@ -74,8 +95,8 @@ describe('the effects this API can run', () => {
       unrunnableEffects([
         { kind: 'write_eligibility_snapshot' },
         { kind: 'post_ledger_entry' },
-        { kind: 'create_loan' },
+        { kind: 'create_document_slots' },
       ]),
-    ).toEqual(['post_ledger_entry', 'create_loan']);
+    ).toEqual(['post_ledger_entry']);
   });
 });

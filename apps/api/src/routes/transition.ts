@@ -75,6 +75,7 @@ import {
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
 import { resolveRequiredDocs } from '../../lib/document-pack.ts';
+import { resolveLoanTerms, type LoanTerms } from '../../lib/loan-terms.ts';
 import {
   advanceDocumentSlot,
   asDocumentSlotEvent,
@@ -336,6 +337,31 @@ async function adjudicateApplication(
     requiredDocs = resolved.slots;
   }
 
+  // The facility, resolved HERE and for the same reason the pack is: by the
+  // time a runner is called the application says `funded`, and an application
+  // at `funded` with no loan behind it is the one outcome `create_loan` exists
+  // to prevent. Terms that cannot be assembled refuse the transition instead.
+  let loanTerms: LoanTerms | null = null;
+  if (declaresEffect(outcome.effects, 'create_loan')) {
+    if (evaluation === null) {
+      // Unreachable, for the reason stated above the same branch on the pack.
+      return failure(500, 'internal_error', "'" + event + "' was adjudicated without an evaluation", {
+        blockers: [],
+        current,
+      });
+    }
+    const resolved = await resolveLoanTerms(service, subject, evaluation.data);
+    if (!resolved.ok) {
+      return failure(
+        422,
+        'effect_input_invalid',
+        "'" + event + "' opens the facility, and " + resolved.reason,
+        { blockers: [], current },
+      );
+    }
+    loanTerms = resolved.terms;
+  }
+
   return await commit(service, {
     actor,
     subject,
@@ -345,6 +371,7 @@ async function adjudicateApplication(
     effects: outcome.effects,
     eligibility: evaluation?.eligibility ?? [],
     requiredDocs,
+    loanTerms,
   });
 }
 
@@ -362,6 +389,8 @@ interface CommitRequest {
   readonly eligibility: readonly ProductEligibility[];
   /** The pack `create_document_slots` is to generate, resolved before the write. */
   readonly requiredDocs: readonly RequiredDocSlot[];
+  /** The facility `create_loan` is to open, resolved before the write. */
+  readonly loanTerms: LoanTerms | null;
 }
 
 /**
@@ -474,6 +503,7 @@ async function commit(
     requiredDocs: request.requiredDocs,
     slot: null,
     upload: null,
+    loanTerms: request.loanTerms,
   });
   if (!effects.ok) {
     return failure(
@@ -656,6 +686,7 @@ async function adjudicateDocumentSlot(
     requiredDocs: [],
     slot,
     upload,
+    loanTerms: null,
   });
   if (!ran.ok) {
     return failure(

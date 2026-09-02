@@ -14,12 +14,12 @@
  * before it was generated, and the same direction an unevaluated rule set fails
  * in: closed.
  *
- * `create_loan` and `post_ledger_entry` are still in that position: both belong
- * to Option 3, which is Phase 7 in plan/09-build-order.md and owns the `loan`
- * table and the ledger they would write. `write_eligibility_snapshot` and
- * `create_document_slots` are not -- both have a table, as of
- * `0005_application_submit.sql` and `0006_documents.sql`, and both have a
- * runner below.
+ * `post_ledger_entry` is still in that position: it writes to `ledger_entry`,
+ * which arrived with `0007_servicing.sql`, and the disbursement it records is
+ * the other half of Option 3. `write_eligibility_snapshot`,
+ * `create_document_slots` and `create_loan` are not -- all three have a table,
+ * as of `0005_application_submit.sql`, `0006_documents.sql` and
+ * `0007_servicing.sql`, and all three have a runner below.
  *
  * An effect whose INPUT cannot be prepared refuses in the same direction and at
  * the same moment, before the update. See `EffectContext.requiredDocs`.
@@ -35,6 +35,7 @@ import {
   insertDocumentSlots,
   insertDocumentUpload,
   insertEligibilitySnapshot,
+  insertLoan,
   listDocumentSlots,
   type DatabaseClient,
   type Json,
@@ -47,6 +48,7 @@ import { advanceDocumentSlot, type DocumentSlotSubject } from './document-slot-s
 import type { PreparedUpload } from './document-upload.ts';
 import { stubExtractor, type Extractor } from './extraction.ts';
 import type { SubjectSnapshot } from './http.ts';
+import { loanInsertRow, type LoanTerms } from './loan-terms.ts';
 
 export type EffectKind = EffectSpec['kind'];
 
@@ -83,6 +85,17 @@ export interface EffectContext {
    */
   readonly slot: DocumentSlotSubject | null;
   readonly upload: PreparedUpload | null;
+  /**
+   * The facility `create_loan` is to open, resolved from the application BEFORE
+   * the state change (see `resolveLoanTerms`).
+   *
+   * Null for every transition that does not fund. Prepared by the caller for
+   * the same reason the document pack is: terms that cannot be assembled have
+   * to refuse the transition, and by the time a runner is called the
+   * application has already moved to `funded` -- which is precisely the state
+   * this effect exists to keep honest.
+   */
+  readonly loanTerms: LoanTerms | null;
 }
 
 export type EffectOutcome =
@@ -262,10 +275,44 @@ async function extractDocument(
   return advanced;
 }
 
+/**
+ * Open the facility the application was approved for.
+ *
+ * One insert, and nothing decided here: the terms were resolved and checked
+ * before the state change, so this runner writes what it was handed or fails
+ * loudly. That is the same division `create_document_slots` keeps, and for the
+ * same reason -- by the time it runs, the application says `funded`.
+ *
+ * There is no idempotency check and none is needed. `fund` leaves `approved`
+ * only, so a repeat is refused by the machine with a state conflict before it
+ * reaches an effect, and the revision-matched update is what makes two lender
+ * tabs serialise. A check-then-insert here would add a race in place of a
+ * guarantee that already holds one level up.
+ */
+async function createLoan(
+  client: DatabaseClient,
+  context: EffectContext,
+): Promise<SubjectSnapshot | null> {
+  const terms = context.loanTerms;
+  if (terms === null) {
+    throw new Error('no loan terms were prepared for this transition');
+  }
+
+  const opened = await insertLoan(client, loanInsertRow(terms));
+  if (opened === null) {
+    // PostgREST accepted the statement and returned no row, so nothing can be
+    // said about whether the facility exists. Reported as a failure: a loan
+    // that might be there is the state this effect exists to rule out.
+    throw new Error('the insert returned no row');
+  }
+  return null;
+}
+
 const RUNNERS: Partial<Record<EffectKind, EffectRunner>> = {
   write_eligibility_snapshot: writeEligibilitySnapshot,
   create_document_slots: createDocumentSlots,
   extract_document: extractDocument,
+  create_loan: createLoan,
 };
 
 /** The kinds this API has an implementation for. Derived, never restated. */

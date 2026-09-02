@@ -659,6 +659,35 @@ async function snapshotsOf(applicationId: string): Promise<readonly EligibilityS
   return await listEligibilitySnapshots(service, applicationId);
 }
 
+interface LoanFixtureRow {
+  readonly id: string;
+  readonly borrower_id: string;
+  readonly org_id: string;
+  readonly product_id: string;
+  readonly approved_limit: string;
+  readonly rate_bps: number;
+  readonly status: string;
+}
+
+/**
+ * The facilities one application has opened, money as exact decimal text.
+ *
+ * `approved_limit::text`, for the reason every money select in @lj/db carries
+ * the cast: PostgREST renders `numeric` as a JSON number, so an uncast read
+ * hands the assertion a binary double and the test agrees with the very
+ * rounding it exists to catch.
+ */
+async function readLoans(applicationId: string): Promise<readonly LoanFixtureRow[]> {
+  const { data, error } = await service
+    .from('loan')
+    .select('id, borrower_id, org_id, product_id, approved_limit::text, rate_bps, status')
+    .eq('application_id', applicationId);
+  if (error !== null) {
+    throw new Error(`could not read the loans of ${applicationId}: ${error.message}`);
+  }
+  return (data ?? []) as unknown as readonly LoanFixtureRow[];
+}
+
 let borrower: TestUser;
 let otherBorrower: TestUser;
 let lender: TestUser;
@@ -675,8 +704,12 @@ let appForConflict: string;
 let appForRefusals: string;
 /** draft, org alpha. The guard-refusal case. */
 let appDraft: string;
-/** approved, org alpha. The declared-effect case. */
+/** approved, org alpha, with the payload that took it there. Funded once. */
 let appApproved: string;
+/** approved, org alpha, naming no product. Funding must refuse and write nothing. */
+let appFundNoProduct: string;
+/** approved, org alpha, naming a product but no amount. Same, for the limit. */
+let appFundNoAmount: string;
 /** submitted, org beta, another borrower. The tenant boundary. */
 let appForeign: string;
 /** draft, org alpha, every step answered. The submit that must succeed. */
@@ -772,6 +805,22 @@ function completePayload(productId: string): Json {
 }
 
 /**
+ * The same payload with the requested amount taken out.
+ *
+ * The figure funding opens the facility with, and the one thing the request
+ * step contributes to a loan that no other row carries. A payload without it
+ * parses -- every leaf is nullable, because a draft is partial by definition --
+ * so nothing below the delivery layer refuses it, and the facility would
+ * otherwise be opened for an amount nobody asked for.
+ */
+function payloadWithoutRequestedAmount(productId: string): Json {
+  const payload = completePayload(productId) as Record<string, Json>;
+  const request = { ...(payload['request'] as Record<string, Json>) };
+  delete request['amount_requested_minor'];
+  return { ...payload, request };
+}
+
+/**
  * A payload the schema rejects outright.
  *
  * `borrower` is a string where a section belongs, which no amount of leniency
@@ -826,6 +875,8 @@ beforeAll(async () => {
     appForRefusals,
     appDraft,
     appApproved,
+    appFundNoProduct,
+    appFundNoAmount,
     appForeign,
     appComplete,
     appStale,
@@ -870,11 +921,28 @@ beforeAll(async () => {
         state: 'draft',
         revision: 0,
       }),
+      // Funding opens the facility from this payload, so an approved row with
+      // an empty one is a row no borrower could have produced -- reaching
+      // `approved` means the submit guard passed, and that needs every step.
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'approved',
         revision: 2,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'approved',
+        revision: 0,
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'approved',
+        revision: 0,
+        data: payloadWithoutRequestedAmount(productAlpha),
       }),
       insertApplication({
         borrowerId: otherBorrower.id,
@@ -1043,6 +1111,8 @@ afterAll(async () => {
       appForRefusals,
       appDraft,
       appApproved,
+      appFundNoProduct,
+      appFundNoAmount,
       appForeign,
       appComplete,
       appStale,
@@ -1489,6 +1559,7 @@ describe('requesting documents generates the pack', () => {
       ],
       slot: null,
       upload: null,
+      loanTerms: null,
     });
 
     expect(outcome.ok).toBe(true);
@@ -1697,9 +1768,16 @@ describe('submitting an application', () => {
   });
 });
 
-describe('a declared effect nothing can carry out', () => {
-  it('refuses before writing anything, rather than funding without a loan', async () => {
-    const before = await eventCount(appApproved);
+// Funding is the seam between the two machines: `funded` is terminal for an
+// application, and the `loan` row it writes is what the servicing machine then
+// works on. `create_loan` was declared with no runner for four phases and the
+// transition refused rather than moving -- correctly, because an application at
+// `funded` with no loan behind it says money moved when nothing did. These
+// cases are that refusal turning into the write, and the write is asserted
+// against the database rather than against the response.
+describe('funding an approved application', () => {
+  it('opens one facility carrying the terms the application asked for', async () => {
+    expect(await readLoans(appApproved)).toEqual([]);
 
     const answer = await post(lender.token, {
       machine: 'application',
@@ -1708,12 +1786,83 @@ describe('a declared effect nothing can carry out', () => {
       expectedRevision: 2,
     });
 
-    expect(answer.status).toBe(501);
-    expect(answer.payload['code']).toBe('effect_not_implemented');
-    expect(String(answer.payload['reason'])).toContain('create_loan');
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('funded');
+    expect(answer.payload['effects']).toEqual(['create_loan']);
 
-    expect(await eventCount(appApproved)).toBe(before);
-    expect(await readApplication(appApproved)).toEqual({ state: 'approved', revision: 2 });
+    const loans = await readLoans(appApproved);
+    expect(loans).toHaveLength(1);
+    const loan = loans[0];
+    // Denormalised from the application, never from the request body.
+    expect(loan?.borrower_id).toBe(borrower.id);
+    expect(loan?.org_id).toBe(orgAlpha);
+    expect(loan?.product_id).toBe(productAlpha);
+    // 9_500_000 minor units, which is what the payload's request step asks
+    // for. Asserted as text so a cent lost on the wire would fail here.
+    expect(loan?.approved_limit).toBe('95000.00');
+    expect(loan?.status).toBe('active');
+    // Nothing in the application, the product or the decision records a rate,
+    // so nothing is charged. See lib/loan-terms.ts.
+    expect(loan?.rate_bps).toBe(0);
+  });
+
+  it('refuses a second funding, and opens no second facility', async () => {
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appApproved,
+      event: 'fund',
+      expectedRevision: 3,
+    });
+
+    // Refused by the machine rather than by the runner: nothing leaves
+    // `funded` on `fund`, so a retry cannot reach the effect at all.
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect(await readLoans(appApproved)).toHaveLength(1);
+  });
+
+  it('refuses an application that names no product, and writes nothing', async () => {
+    const before = await eventCount(appFundNoProduct);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appFundNoProduct,
+      event: 'fund',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(String(answer.payload['reason'])).toContain('names no product');
+
+    expect(await readLoans(appFundNoProduct)).toEqual([]);
+    expect(await eventCount(appFundNoProduct)).toBe(before);
+    expect(await readApplication(appFundNoProduct)).toEqual({
+      state: 'approved',
+      revision: 0,
+    });
+  });
+
+  it('refuses an application that asked for no amount, rather than opening a facility at zero', async () => {
+    const before = await eventCount(appFundNoAmount);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appFundNoAmount,
+      event: 'fund',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(String(answer.payload['reason'])).toContain('amount');
+
+    expect(await readLoans(appFundNoAmount)).toEqual([]);
+    expect(await eventCount(appFundNoAmount)).toBe(before);
+    expect(await readApplication(appFundNoAmount)).toEqual({
+      state: 'approved',
+      revision: 0,
+    });
   });
 });
 
