@@ -24,8 +24,8 @@ import {
   parseRequiredDocs,
   type DocumentContext,
   type DocumentSlotView,
-  type ExtractedField,
   type RequiredDocSlot,
+  parseExtractedFields,
 } from '@lj/rules';
 
 /**
@@ -137,60 +137,6 @@ export function documentSlotRows(
 /* -------------------------------------------------------------------------
  * Reading a pack back
  * ---------------------------------------------------------------------- */
-
-/**
- * `extracted` as packages/rules reads it.
- *
- * The column is jsonb and @lj/domain leaves it opaque, because the confidence
- * floor and the ocr-versus-human distinction are rules and live above the
- * persistence layer. The wire shape is the one `0006_documents.sql` documents
- * and apps/web reads:
- *
- *     { "<field>": { "value": <json>, "confidence_basis_points": <int>,
- *                    "source": "ocr" | "human" } }
- *
- * snake_case on the wire, camelCase in the rules' own view of it, and this is
- * the boundary between the two. A local reader rather than a shared one only
- * because there is not yet a shared one -- when `parseExtractedFields` lands in
- * packages/rules, this function goes and its callers import that instead. It is
- * deliberately identical in behaviour so that the swap changes nothing.
- *
- * A field that does not parse is DROPPED rather than admitted with a default.
- * Dropping makes the slot unreadable, which blocks the pack; admitting would
- * let a malformed row satisfy a requirement. Failing closed is the only
- * direction available where the alternative is a document nobody checked.
- */
-export function parseExtractedFields(
-  value: unknown,
-): Readonly<Record<string, ExtractedField>> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return {};
-  }
-
-  const fields: Record<string, ExtractedField> = {};
-  for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-      continue;
-    }
-    const entry = raw as Record<string, unknown>;
-    const confidence = entry['confidence_basis_points'];
-    const source = entry['source'];
-    if (typeof confidence !== 'number' || !Number.isInteger(confidence)) {
-      continue;
-    }
-    // Exactly these two strings. Anything else is a source nothing has decided
-    // how to weigh, and the safe reading of an unknown source is the machine's.
-    if (source !== 'ocr' && source !== 'human') {
-      continue;
-    }
-    fields[name] = {
-      value: entry['value'] ?? null,
-      confidenceBasisPoints: confidence,
-      source,
-    };
-  }
-  return fields;
-}
 
 /** The newest upload per slot, from one list already ordered newest first. */
 function latestUploadBySlot(
