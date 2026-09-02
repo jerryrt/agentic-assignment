@@ -53,3 +53,22 @@ export function anyPermits(
 ): boolean {
   return transitions.some((transition) => transition.actor.includes(role));
 }
+
+/**
+ * Narrow a caller's string to one of a machine's declared events.
+ *
+ * One implementation, called by each machine's own `asXEvent` -- which stays,
+ * because the tuple it names is the thing worth reading at the call site. The
+ * line was written out twice before `credit_release` arrived and would have
+ * been written a third time; three occurrences is the point at which it belongs
+ * somewhere (CLAUDE.md section 9). It is worth having in one place because the
+ * cast is safe ONLY because `includes` has just proved the membership, and a
+ * copy that drifted from that shape would hand the engine an event no
+ * transition declares.
+ */
+export function narrowEvent<E extends string>(
+  declared: readonly E[],
+  event: string,
+): E | null {
+  return (declared as readonly string[]).includes(event) ? (event as E) : null;
+}

@@ -46,6 +46,7 @@ import {
 import type { Actor } from './actor.ts';
 import { buildDocumentContext } from './document-pack.ts';
 import type { SubjectSnapshot } from './http.ts';
+import { narrowEvent } from './machines.ts';
 
 export interface ApplicationSubject {
   readonly id: string;
@@ -122,9 +123,7 @@ export function applicationReadableBy(subject: ApplicationSubject, actor: Actor)
 
 /** The machine's events, narrowed from the string the request carried. */
 export function asApplicationEvent(event: string): ApplicationEvent | null {
-  return (APPLICATION_EVENTS as readonly string[]).includes(event)
-    ? (event as ApplicationEvent)
-    : null;
+  return narrowEvent(APPLICATION_EVENTS, event);
 }
 
 

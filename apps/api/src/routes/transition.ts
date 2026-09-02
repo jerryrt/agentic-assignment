@@ -171,6 +171,47 @@ interface AdjudicationRequest {
   readonly filename: string | null;
 }
 
+/**
+ * The two refusals that are structural rather than about criteria.
+ *
+ * Asked of the machine definition rather than inferred from the engine's
+ * message, and asked before the guard context is built, because neither answer
+ * needs one: no transition leaves this state on this event, or one does and
+ * this role may not fire it. Both carry an empty `blockers` list, because there
+ * is no criterion to show -- the request was never coherent.
+ *
+ * Written out once per adjudicator until `credit_release` made it three
+ * copies of one paragraph, each of which had to keep saying 409 for a state
+ * with no such exit and 403 for a role, in that order. Getting the order wrong
+ * in one copy would tell a borrower they may not fire a transition that does
+ * not exist, and nothing would catch it (CLAUDE.md section 9).
+ */
+function structuralRefusal(
+  machine: MachineShape,
+  actor: Actor,
+  event: string,
+  current: SubjectSnapshot,
+): Response | null {
+  const candidates = transitionsFrom(machine, current.state, event);
+  if (candidates.length === 0) {
+    return failure(
+      409,
+      'state_conflict',
+      "'" + event + "' does not leave '" + current.state + "'",
+      { blockers: [], current },
+    );
+  }
+  if (!anyPermits(candidates, actor.role)) {
+    return failure(
+      403,
+      'role_not_permitted',
+      "role '" + actor.role + "' may not fire '" + event + "' from '" + current.state + "'",
+      { blockers: [], current },
+    );
+  }
+  return null;
+}
+
 async function adjudicateApplication(
   service: DatabaseClient,
   request: AdjudicationRequest,
@@ -184,25 +225,9 @@ async function adjudicateApplication(
   }
   const current: SubjectSnapshot = { state: subject.state, revision: subject.revision };
 
-  // Structural authority, asked of the machine definition rather than inferred
-  // from the engine's refusal message. Both answers below carry no blockers,
-  // because there is no criterion to show: the request was never coherent.
-  const candidates = transitionsFrom(request.machine, subject.state, event);
-  if (candidates.length === 0) {
-    return failure(
-      409,
-      'state_conflict',
-      "'" + event + "' does not leave '" + subject.state + "'",
-      { blockers: [], current },
-    );
-  }
-  if (!anyPermits(candidates, actor.role)) {
-    return failure(
-      403,
-      'role_not_permitted',
-      "role '" + actor.role + "' may not fire '" + event + "' from '" + subject.state + "'",
-      { blockers: [], current },
-    );
+  const refused = structuralRefusal(request.machine, actor, event, current);
+  if (refused !== null) {
+    return refused;
   }
 
   const narrowed = asApplicationEvent(event);
@@ -511,22 +536,9 @@ async function adjudicateDocumentSlot(
 
   const current: SubjectSnapshot = { state: slot.state, revision: slot.revision };
 
-  const candidates = transitionsFrom(request.machine, slot.state, event);
-  if (candidates.length === 0) {
-    return failure(
-      409,
-      'state_conflict',
-      "'" + event + "' does not leave '" + slot.state + "'",
-      { blockers: [], current },
-    );
-  }
-  if (!anyPermits(candidates, actor.role)) {
-    return failure(
-      403,
-      'role_not_permitted',
-      "role '" + actor.role + "' may not fire '" + event + "' from '" + slot.state + "'",
-      { blockers: [], current },
-    );
+  const refused = structuralRefusal(request.machine, actor, event, current);
+  if (refused !== null) {
+    return refused;
   }
 
   const narrowed = asDocumentSlotEvent(event);

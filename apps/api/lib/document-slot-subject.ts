@@ -30,6 +30,7 @@ import {
 } from '@lj/workflow';
 
 import type { SubjectSnapshot } from './http.ts';
+import { narrowEvent } from './machines.ts';
 
 export interface DocumentSlotSubject {
   readonly id: string;
@@ -80,9 +81,7 @@ export async function loadDocumentSlot(
 
 /** The machine's events, narrowed from the string the request carried. */
 export function asDocumentSlotEvent(event: string): DocumentSlotEvent | null {
-  return (DOCUMENT_SLOT_EVENTS as readonly string[]).includes(event)
-    ? (event as DocumentSlotEvent)
-    : null;
+  return narrowEvent(DOCUMENT_SLOT_EVENTS, event);
 }
 
 /**
