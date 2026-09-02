@@ -1,6 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "outputDirectory": "dist/web/browser",
+  "ignoreCommand": "[ \"$VERCEL_ENV\" != \"production\" ]",
   "rewrites": [
     {
       "source": "/api/:path*",
