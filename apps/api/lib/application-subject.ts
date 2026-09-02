@@ -30,6 +30,7 @@ import {
   evaluateEligibility,
   parseEligibilityCriteria,
   type EligibilityProduct,
+  type ProductEligibility,
 } from '@lj/rules';
 import {
   APPLICATION_EVENTS,
@@ -169,12 +170,28 @@ function eligibilityProducts(rows: readonly LoanProduct[]): EligibilityProduct[]
 }
 
 /**
+ * One evaluation of one application: what the guards read, and what the
+ * declared effects record.
+ *
+ * The two travel together because they must be the SAME evaluation. The
+ * `write_eligibility_snapshot` effect stores what the borrower was told, and a
+ * runner that re-evaluated after the guard had passed could store criteria the
+ * applicant was never shown -- which is exactly the drift the snapshot exists
+ * to rule out.
+ */
+export interface ApplicationEvaluation {
+  readonly context: ApplicationGuardContext;
+  /** Every active product this application was evaluated against, as evaluated. */
+  readonly eligibility: readonly ProductEligibility[];
+}
+
+/**
  * The evaluated rule sets the application machine's guards read.
  *
  * A guard never evaluates a rule (see `packages/workflow/src/context.ts`); the
  * caller runs packages/rules and passes the results in, and this is that
- * caller. Each field below is one rule set, and an EMPTY field is a refusal
- * rather than a pass -- `requireRules` says the criteria have not been
+ * caller. Each field of the context is one rule set, and an EMPTY field is a
+ * refusal rather than a pass -- `requireRules` says the criteria have not been
  * evaluated and blocks, because reading "no criteria" as "no objections" would
  * let a forgotten evaluation open a transition.
  *
@@ -197,16 +214,19 @@ function eligibilityProducts(rows: readonly LoanProduct[]): EligibilityProduct[]
  * with 422 and say the criteria have not been evaluated. Wiring each bucket is
  * one call in this function once its producer exists.
  */
-export async function buildApplicationGuardContext(
+export async function evaluateApplication(
   client: DatabaseClient,
   subject: ApplicationSubject,
-): Promise<ApplicationGuardContext> {
+): Promise<ApplicationEvaluation> {
   const products = eligibilityProducts(await listActiveLoanProducts(client, subject.orgId));
   const evaluated = evaluateEligibility(products, eligibilityContextFrom(subject.data));
   const eligibility: readonly RuleResult[] =
     products.length === 0 ? [] : [atLeastOneEligibleProduct(evaluated)];
 
-  return { completeness: [], eligibility, documentPack: [] };
+  return {
+    context: { completeness: [], eligibility, documentPack: [] },
+    eligibility: evaluated,
+  };
 }
 
 export interface AdvanceRequest {

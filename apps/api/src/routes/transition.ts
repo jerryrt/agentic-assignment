@@ -47,6 +47,7 @@
 import { appendWorkflowEvent, listWorkflowEvents, type DatabaseClient } from '@lj/db';
 import { createServiceRoleClient } from '@lj/db/service-role';
 import type { ApplicationState, WorkflowMachine } from '@lj/domain';
+import type { ProductEligibility } from '@lj/rules';
 import {
   applicationMachine,
   apply,
@@ -59,11 +60,11 @@ import {
   advanceApplication,
   applicationReadableBy,
   asApplicationEvent,
-  buildApplicationGuardContext,
+  evaluateApplication,
   loadApplication,
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
-import { unrunnableEffects } from '../../lib/effects.ts';
+import { runEffects, unrunnableEffects } from '../../lib/effects.ts';
 import { readApiEnvironment } from '../../lib/environment.ts';
 import { failure, success, type SubjectSnapshot } from '../../lib/http.ts';
 import { anyPermits, transitionsFrom } from '../../lib/machines.ts';
@@ -157,8 +158,14 @@ async function adjudicate(request: Request): Promise<Response> {
 
   // 4 -- the decision. Guards run in TypeScript because they need context, and
   // the context is evaluated rule sets that packages/rules produced just now.
-  const context = await buildApplicationGuardContext(service, subject);
-  const outcome = apply(applicationMachine, subject.state, narrowed, actor.role, context);
+  const evaluation = await evaluateApplication(service, subject);
+  const outcome = apply(
+    applicationMachine,
+    subject.state,
+    narrowed,
+    actor.role,
+    evaluation.context,
+  );
 
   // 5 -- a guard refused, and said why.
   if (!outcome.ok) {
@@ -192,6 +199,7 @@ async function adjudicate(request: Request): Promise<Response> {
     expectedRevision,
     to: outcome.to,
     effects: outcome.effects,
+    eligibility: evaluation.eligibility,
   });
 }
 
@@ -202,6 +210,11 @@ interface CommitRequest {
   readonly expectedRevision: number;
   readonly to: ApplicationState;
   readonly effects: readonly EffectSpec[];
+  /**
+   * The evaluation the decision above was taken on, carried through so an
+   * effect records what the guard read rather than re-reading it.
+   */
+  readonly eligibility: readonly ProductEligibility[];
 }
 
 /**
@@ -281,9 +294,40 @@ async function commit(
     );
   }
 
-  // 6c -- declared effects would run here, inside the same transaction as the
-  // state change. There are none to run: an unrunnable effect refused above,
-  // and no kind has an implementation yet (lib/effects.ts).
+  // 6c -- the declared effects, after the state change rather than before it.
+  //
+  // The order is forced by the same absence of a transaction the two writes
+  // above work around, and it is the right way round anyway: an effect written
+  // first would record a submission that the revision check then refused, and
+  // "a stale revision writes nothing" is a property this endpoint is required
+  // to have.
+  //
+  // What that costs is a window in which the state has moved and the effect has
+  // not. It is reported, never absorbed. For the one effect that exists the
+  // damage is bounded and repairable: the snapshot is derivable from the
+  // application's own payload at this revision, which is still in the database,
+  // so the missing row can be written afterwards. That is why this is a 500
+  // naming what did not land rather than an attempt to undo the transition --
+  // reversing it would append a second, false entry to an append-only log.
+  const effects = await runEffects(service, request.effects, {
+    applicationId: subject.id,
+    revision: advanced.revision,
+    eligibility: request.eligibility,
+  });
+  if (!effects.ok) {
+    return failure(
+      500,
+      'effect_write_failed',
+      'the application moved to ' +
+        request.to +
+        " but the declared effect '" +
+        effects.kind +
+        "' did not: " +
+        effects.reason +
+        '; the state change stands',
+      { blockers: [], current: advanced },
+    );
+  }
 
   return success({
     machine: 'application' satisfies WorkflowMachine,
