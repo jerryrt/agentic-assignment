@@ -1,7 +1,14 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  inject,
+  signal,
+  viewChildren,
+} from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 
+import { LjAuthField } from './auth-field.ts';
 import { roleHomePath } from './auth.guards.ts';
 import { SupabaseAuthService } from './auth.service.ts';
 
@@ -25,7 +32,7 @@ import { SupabaseAuthService } from './auth.service.ts';
 @Component({
   selector: 'lj-sign-up-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ReactiveFormsModule, RouterLink],
+  imports: [ReactiveFormsModule, RouterLink, LjAuthField],
   template: `
     <div class="lj-page" style="max-width: 420px">
       <h1>Create an account</h1>
@@ -56,38 +63,31 @@ import { SupabaseAuthService } from './auth.service.ts';
           </p>
         }
 
-        <label class="lj-field">
-          <span>Full name</span>
-          <input
-            type="text"
-            name="fullName"
-            autocomplete="name"
-            formControlName="fullName"
-            data-testid="full-name"
-          />
-        </label>
+        <lj-auth-field
+          [field]="form.controls.fullName"
+          label="Full name"
+          name="fullName"
+          autocomplete="name"
+          testId="full-name"
+        />
 
-        <label class="lj-field">
-          <span>Email</span>
-          <input
-            type="email"
-            name="email"
-            autocomplete="email"
-            formControlName="email"
-            data-testid="email"
-          />
-        </label>
+        <lj-auth-field
+          [field]="form.controls.email"
+          label="Email"
+          type="email"
+          name="email"
+          autocomplete="email"
+          testId="email"
+        />
 
-        <label class="lj-field">
-          <span>Password</span>
-          <input
-            type="password"
-            name="password"
-            autocomplete="new-password"
-            formControlName="password"
-            data-testid="password"
-          />
-        </label>
+        <lj-auth-field
+          [field]="form.controls.password"
+          label="Password"
+          type="password"
+          name="password"
+          autocomplete="new-password"
+          testId="password"
+        />
 
         <button class="lj-button" type="submit" [disabled]="busy()" data-testid="submit">
           {{ busy() ? 'Creating...' : 'Create account' }}
@@ -103,20 +103,24 @@ export class SignUpPage {
   private readonly router = inject(Router);
   private readonly formBuilder = inject(FormBuilder);
 
+  private readonly fields = viewChildren(LjAuthField);
+
   protected readonly busy = signal(false);
   protected readonly failure = signal<string | null>(null);
 
   protected readonly form = this.formBuilder.nonNullable.group({
     fullName: ['', [Validators.required]],
     email: ['', [Validators.required, Validators.email]],
-    // The floor GoTrue itself enforces. Stating it once here keeps the message
-    // in front of the user instead of arriving as a server error after submit.
+    // The floor GoTrue itself enforces, checked here so the answer arrives
+    // beside the field rather than as a server error after a round trip.
+    // <lj-auth-field> is what puts it in front of anyone: before it, this
+    // validator refused the submit and said nothing.
     password: ['', [Validators.required, Validators.minLength(6)]],
   });
 
   protected async submit(): Promise<void> {
     if (this.form.invalid || this.busy()) {
-      this.form.markAllAsTouched();
+      this.reportProblems();
       return;
     }
 
@@ -133,5 +137,17 @@ export class SignUpPage {
     } finally {
       this.busy.set(false);
     }
+  }
+
+  /**
+   * Show every unanswered field, and put the caret in the first of them.
+   *
+   * Marking the form touched is what makes the messages render; moving the
+   * focus is what makes them findable. A keyboard user has no other way to
+   * reach the control at fault.
+   */
+  private reportProblems(): void {
+    this.form.markAllAsTouched();
+    this.fields().find((field) => field.isAtFault())?.focus();
   }
 }

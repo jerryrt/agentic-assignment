@@ -87,6 +87,9 @@ importers:
       '@lj/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@lj/rules':
+        specifier: workspace:*
+        version: link:../../packages/rules
       '@lj/ui':
         specifier: workspace:*
         version: link:../../packages/ui

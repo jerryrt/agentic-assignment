@@ -20,6 +20,7 @@ import {
 import {
   ApplicationBorrowerViewSchema,
   moneyFromNumericString,
+  parseApplicationData,
   type ApplicationState,
   type JsonValue,
   type Money,
@@ -27,17 +28,20 @@ import {
 } from '@lj/domain';
 import {
   atLeastOneEligibleProduct,
+  eligibilityContextFromApplication,
+  evaluateApplicationCompleteness,
   evaluateEligibility,
   parseEligibilityCriteria,
   type EligibilityProduct,
+  type ProductEligibility,
 } from '@lj/rules';
 import {
   APPLICATION_EVENTS,
+  applicationMachine,
   type ApplicationEvent,
   type ApplicationGuardContext,
 } from '@lj/workflow';
 
-import { eligibilityContextFrom } from './application-data.ts';
 import type { Actor } from './actor.ts';
 import type { SubjectSnapshot } from './http.ts';
 
@@ -169,45 +173,146 @@ function eligibilityProducts(rows: readonly LoanProduct[]): EligibilityProduct[]
 }
 
 /**
+ * One evaluation of one application: what the guards read, and what the
+ * declared effects record.
+ *
+ * The two travel together because they must be the SAME evaluation. The
+ * `write_eligibility_snapshot` effect stores what the borrower was told, and a
+ * runner that re-evaluated after the guard had passed could store criteria the
+ * applicant was never shown -- which is exactly the drift the snapshot exists
+ * to rule out.
+ */
+export interface ApplicationEvaluation {
+  readonly context: ApplicationGuardContext;
+  /** Every active product this application was evaluated against, as evaluated. */
+  readonly eligibility: readonly ProductEligibility[];
+}
+
+/**
  * The evaluated rule sets the application machine's guards read.
  *
  * A guard never evaluates a rule (see `packages/workflow/src/context.ts`); the
  * caller runs packages/rules and passes the results in, and this is that
- * caller. Each field below is one rule set, and an EMPTY field is a refusal
- * rather than a pass -- `requireRules` says the criteria have not been
+ * caller. Each field of the context is one rule set, and an EMPTY field is a
+ * refusal rather than a pass -- `requireRules` says the criteria have not been
  * evaluated and blocks, because reading "no criteria" as "no objections" would
  * let a forgotten evaluation open a transition.
  *
- * Two of the three are empty today, and both are waiting on work this scope
- * does not own:
+ * One of the three is still empty, and it is waiting on work this scope does
+ * not own:
  *
- *   completeness  Whether the multi-step form is finished. The form and its
- *                 payload schema are Phase 5 (`feature-apply`); packages/rules
- *                 has no rule set for it and packages/domain has no
- *                 ApplicationDataSchema to write one against. Inventing one
- *                 here would put a business rule in the delivery layer and
- *                 create the second definition that Phase 5 would then have to
- *                 disagree with.
  *   documentPack  Whether every required document is accepted and current.
  *                 packages/rules HAS this rule set -- evaluateCompleteness --
  *                 but `document_slot` has no table (Phase 6), so there are no
  *                 slots to evaluate.
  *
- * The consequence is visible and correct: `submit` and `begin_review` refuse
- * with 422 and say the criteria have not been evaluated. Wiring each bucket is
- * one call in this function once its producer exists.
+ * The consequence is visible and correct: `begin_review` refuses with 422 and
+ * says the criteria have not been evaluated. Wiring that bucket is one call in
+ * this function once its producer exists.
+ *
+ * A PAYLOAD THAT DOES NOT PARSE REFUSES, and says so. It must not fall back to
+ * an empty context: that reads to the applicant as four unanswered steps, when
+ * the truth is a row nothing can describe. The two are different problems with
+ * different remedies, and only one of them is the applicant's to fix. Refusing
+ * is also the direction everything else here fails -- an unevaluated rule set,
+ * an effect with no runner -- and it costs a corrupt application every
+ * transition rather than only the guarded ones, because the context is built
+ * before the machine is consulted. That is deliberate: `data` is written by the
+ * borrower's own autosave and by nothing else, so the row that refuses to move
+ * is repaired by the same path that broke it.
  */
-export async function buildApplicationGuardContext(
+export type ApplicationEvaluationResult =
+  | { readonly ok: true; readonly evaluation: ApplicationEvaluation }
+  | { readonly ok: false; readonly reason: string };
+
+export async function evaluateApplication(
   client: DatabaseClient,
   subject: ApplicationSubject,
-): Promise<ApplicationGuardContext> {
+): Promise<ApplicationEvaluationResult> {
+  const parsed = parseApplicationData(subject.data);
+  if (!parsed.ok) {
+    // The problems name paths inside the stored payload, not anything the
+    // caller sent, so quoting them is a diagnosis rather than an echo of
+    // untrusted input. Capped, because a wholly wrong shape produces one issue
+    // per leaf and a response body is not a log.
+    return {
+      ok: false,
+      reason:
+        'the stored application data does not match the schema that describes it, so its ' +
+        'criteria could not be evaluated: ' +
+        parsed.problems.slice(0, 3).join('; '),
+    };
+  }
+
   const products = eligibilityProducts(await listActiveLoanProducts(client, subject.orgId));
-  const evaluated = evaluateEligibility(products, eligibilityContextFrom(subject.data));
+  const evaluated = evaluateEligibility(
+    products,
+    eligibilityContextFromApplication(parsed.data),
+  );
   const eligibility: readonly RuleResult[] =
     products.length === 0 ? [] : [atLeastOneEligibleProduct(evaluated)];
 
-  return { completeness: [], eligibility, documentPack: [] };
+  return {
+    ok: true,
+    evaluation: {
+      context: {
+        completeness: evaluateApplicationCompleteness(parsed.data),
+        eligibility,
+        documentPack: [],
+      },
+      eligibility: evaluated,
+    },
+  };
 }
+
+/**
+ * Whether this transition needs the rule sets evaluated at all.
+ *
+ * Read off the machine definition, which is the one statement of what each
+ * transition needs: a guard is the only thing that reads the context, and a
+ * declared effect is the only other thing that reads the evaluation beside it.
+ * Nothing here restates which transitions those are (CLAUDE.md section 9).
+ *
+ * It exists because evaluating unconditionally made a corrupt payload a
+ * LOCKOUT. `withdraw` declares no guard and no effect, so it never reads a rule
+ * set -- but the context was built before the machine was consulted, so an
+ * unparseable `data` refused it along with everything else. After a submit the
+ * borrower can no longer write `data` at all (application_update_own_draft
+ * permits an update only while the state is 'draft'), so a row stranded by a
+ * schema change could be neither repaired nor abandoned by anyone, and needed a
+ * hand-written UPDATE against the database. A borrower's way out of their own
+ * application must not depend on rules that have nothing to say about it.
+ *
+ * Getting this wrong in the direction of `false` is safe: the caller then
+ * passes UNEVALUATED_APPLICATION_CONTEXT, whose empty rule sets requireRules
+ * reads as "not evaluated" and refuses. A mistake here can only ever refuse a
+ * transition, never open one.
+ */
+export function applicationTransitionNeedsEvaluation(
+  from: ApplicationState,
+  event: ApplicationEvent,
+): boolean {
+  return applicationMachine.transitions.some(
+    (transition) =>
+      transition.event === event &&
+      transition.from.includes(from) &&
+      (transition.guard !== null || transition.effects.length > 0),
+  );
+}
+
+/**
+ * What a transition that needs no evaluation is adjudicated against.
+ *
+ * Empty rather than absent, because `apply` takes a context whether or not the
+ * transition has a guard. Every field being empty is what makes it safe to hand
+ * over: requireRules reads an empty rule set as "the caller did not evaluate
+ * this" and refuses, so a guard reached with this in hand fails closed.
+ */
+export const UNEVALUATED_APPLICATION_CONTEXT: ApplicationGuardContext = {
+  completeness: [],
+  eligibility: [],
+  documentPack: [],
+};
 
 export interface AdvanceRequest {
   readonly applicationId: string;

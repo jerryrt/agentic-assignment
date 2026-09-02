@@ -21,9 +21,15 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { createAnonClient, listWorkflowEvents } from '@lj/db';
+import {
+  createAnonClient,
+  listEligibilitySnapshots,
+  listWorkflowEvents,
+  type EligibilitySnapshot,
+  type Json,
+} from '@lj/db';
 import { createServiceRoleClient, type ServiceRoleClient } from '@lj/db/service-role';
-import { RuleResultSchema } from '@lj/domain';
+import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { POST } from '../src/routes/transition.ts';
@@ -102,6 +108,11 @@ function blockersOf(answer: Answer): unknown[] {
   return Array.isArray(blockers) ? blockers : [];
 }
 
+/** The blockers as the type that owns them, so a case can read `missing`. */
+function ruleResults(answer: Answer): RuleResult[] {
+  return blockersOf(answer).map((blocker) => RuleResultSchema.parse(blocker));
+}
+
 function currentOf(answer: Answer): Record<string, unknown> {
   const current = answer.payload['current'];
   return typeof current === 'object' && current !== null
@@ -163,6 +174,8 @@ async function insertApplication(values: {
   orgId: string;
   state: string;
   revision: number;
+  /** The form payload. Empty unless the case is about what the form said. */
+  data?: Json;
 }): Promise<string> {
   const { data, error } = await service
     .from('application')
@@ -171,12 +184,68 @@ async function insertApplication(values: {
       org_id: values.orgId,
       state: values.state,
       revision: values.revision,
-      data: {},
+      data: values.data ?? {},
     })
     .select('id')
     .single();
   if (error !== null || data === null) {
     throw new Error(`fixture application failed: ${error?.message ?? 'no row'}`);
+  }
+  return data.id;
+}
+
+/**
+ * A product the complete payload below actually qualifies for.
+ *
+ * Modelled on the Equipment Term Loan in 0004_demo_data.sql rather than
+ * invented: the submit guard requires at least one eligible product, so a
+ * fixture whose criteria nothing could meet would make every submit refuse for
+ * a reason that has nothing to do with what is under test.
+ */
+async function insertLoanProduct(orgId: string): Promise<string> {
+  const { data, error } = await service
+    .from('loan_product')
+    .insert({
+      org_id: orgId,
+      name: PRODUCT_NAME,
+      min_amount: 10_000.0,
+      max_amount: 250_000.0,
+      criteria: {
+        version: 1,
+        rules: [
+          {
+            id: 'dscr_floor',
+            label: 'Debt service coverage',
+            kind: 'min',
+            field: 'dscr',
+            threshold: 11_500,
+            severity: 'error',
+          },
+          {
+            id: 'max_ltv',
+            label: 'Loan to value',
+            kind: 'max',
+            field: 'ltv',
+            threshold: 8_000,
+            severity: 'error',
+          },
+          {
+            id: 'in_footprint',
+            label: 'Operating region',
+            kind: 'one_of',
+            field: 'province',
+            allowed: ['AB', 'SK', 'MB'],
+            severity: 'error',
+          },
+        ],
+      },
+      required_docs: { version: 1, slots: [] },
+      active: true,
+    })
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture loan_product failed: ${error?.message ?? 'no row'}`);
   }
   return data.id;
 }
@@ -195,8 +264,24 @@ async function readApplication(
   return { state: data.state, revision: data.revision };
 }
 
+async function readSubmittedAt(id: string): Promise<string | null> {
+  const { data, error } = await service
+    .from('application')
+    .select('submitted_at')
+    .eq('id', id)
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`could not read application ${id}: ${error?.message ?? 'no row'}`);
+  }
+  return data.submitted_at;
+}
+
 async function eventCount(subjectId: string): Promise<number> {
   return (await listWorkflowEvents(service, 'application', subjectId)).length;
+}
+
+async function snapshotsOf(applicationId: string): Promise<readonly EligibilitySnapshot[]> {
+  return await listEligibilitySnapshots(service, applicationId);
 }
 
 let borrower: TestUser;
@@ -219,8 +304,77 @@ let appDraft: string;
 let appApproved: string;
 /** submitted, org beta, another borrower. The tenant boundary. */
 let appForeign: string;
+/** draft, org alpha, every step answered. The submit that must succeed. */
+let appComplete: string;
+/** draft, org alpha, complete, submitted at a revision that has moved on. */
+let appStale: string;
+/** draft, org alpha, carrying a payload no schema describes. */
+let appCorrupt: string;
+let appCorruptToWithdraw: string;
+
+let productAlpha: string;
 
 const SUBMITTED_REVISION = 3;
+
+const PRODUCT_NAME = 'Api Probe Equipment Term Loan';
+
+/**
+ * A payload with every required field answered, on every step.
+ *
+ * Copied from the shape packages/domain declares rather than invented, and
+ * chosen so the figures clear the product above: coverage is 1.597 against a
+ * floor of 1.25, loan-to-value is 76% against a cap of 80%, and Alberta is in
+ * the footprint. The point of the case is a submit that succeeds, so every
+ * criterion has to pass for a reason that is legible here.
+ */
+const COMPLETE_PAYLOAD: Json = {
+  borrower: {
+    entity_type: 'sole_trader',
+    legal_name: 'Beau Marchand',
+    years_farming: 2,
+    province: 'AB',
+    postal_code: 'T1J 4B4',
+    contact_email: 'grower@example.test',
+    contact_phone: '403-555-0119',
+  },
+  farm: {
+    primary_commodity: 'mixed',
+    irrigation: 'none',
+    has_crop_insurance: true,
+    parcels: [
+      { legal_description: 'SW-08-09-22-W4', acres: 310, tenure: 'owned', commodity: 'mixed' },
+    ],
+  },
+  financials: {
+    statements_basis: 'accrual',
+    gross_revenue_minor: 41_000_000,
+    operating_expenses_minor: 29_500_000,
+    existing_debt_service_minor: 7_200_000,
+    current_assets_minor: 18_000_000,
+    current_liabilities_minor: 9_500_000,
+  },
+  request: {
+    product_id: '00000000-0000-4000-8000-0000000000b2',
+    amount_requested_minor: 9_500_000,
+    term_months: 60,
+    purpose: 'Replace a 1998 combine ahead of harvest',
+    collateral_value_minor: 12_500_000,
+  },
+};
+
+/**
+ * A payload the schema rejects outright.
+ *
+ * `borrower` is a string where a section belongs, which no amount of leniency
+ * turns into "not answered yet". A client cannot write this through the
+ * autosave path by accident, which is exactly why it has to be tested: the row
+ * it describes is corrupt, and the honest answer is to say so rather than to
+ * render a corrupt row as an unfinished form.
+ */
+const CORRUPT_PAYLOAD: Json = {
+  borrower: 'Fenwick Grain Co.',
+  farm: { parcels: 'two quarters' },
+};
 
 beforeAll(async () => {
   stack = readLocalStack();
@@ -252,8 +406,20 @@ beforeAll(async () => {
     promoteToLender(foreignLender, orgBeta),
   ]);
 
-  [appForSuccess, appForConflict, appForRefusals, appDraft, appApproved, appForeign] =
-    await Promise.all([
+  productAlpha = await insertLoanProduct(orgAlpha);
+
+  [
+    appForSuccess,
+    appForConflict,
+    appForRefusals,
+    appDraft,
+    appApproved,
+    appForeign,
+    appComplete,
+    appStale,
+    appCorrupt,
+    appCorruptToWithdraw,
+  ] = await Promise.all([
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
@@ -290,6 +456,36 @@ beforeAll(async () => {
         state: 'submitted',
         revision: SUBMITTED_REVISION,
       }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'draft',
+        revision: 0,
+        data: COMPLETE_PAYLOAD,
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'draft',
+        revision: 2,
+        data: COMPLETE_PAYLOAD,
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'draft',
+        revision: 0,
+        data: CORRUPT_PAYLOAD,
+      }),
+      // A second corrupt row, so the case that MOVES one does not depend on
+      // running after the case that only reads one.
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'draft',
+        revision: 0,
+        data: CORRUPT_PAYLOAD,
+      }),
     ]);
 }, 60_000);
 
@@ -302,6 +498,11 @@ afterAll(async () => {
   // survive it -- that is the append-only property working, and it is why the
   // suite never asserts on a global event count. `supabase db reset` is the
   // reset button for the local stack.
+  // eligibility_snapshot rows go with their applications, by the cascade in
+  // 0005_application_submit.sql. That migration withholds DELETE from
+  // service_role as well, so the cascade is the only route -- a referential
+  // action runs as the owner of the referencing table rather than as the
+  // deleting role.
   await service
     .from('application')
     .delete()
@@ -312,7 +513,12 @@ afterAll(async () => {
       appDraft,
       appApproved,
       appForeign,
+      appComplete,
+      appStale,
+      appCorrupt,
+      appCorruptToWithdraw,
     ]);
+  await service.from('loan_product').delete().eq('id', productAlpha);
   await service
     .from('profile')
     .update({ org_id: null })
@@ -664,6 +870,176 @@ describe('a legal transition', () => {
     expect(String(answer.payload['reason'])).toContain('not been evaluated');
     expect(await eventCount(appForSuccess)).toBe(before);
     expect((await readApplication(appForSuccess)).state).toBe('docs_pending');
+  });
+});
+
+// Submitting is the one transition that reads the form, stamps a timestamp and
+// records what the applicant was told, so it is the one with three ways to be
+// half done. Every case below asserts on the database afterwards rather than on
+// the response alone: the response is this code's own account of what it did.
+describe('submitting an application', () => {
+  it('refuses an incomplete draft and names the missing fields by path', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'application',
+      subjectId: appDraft,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('guard_refused');
+    expect(String(answer.payload['reason'])).toContain('not complete');
+
+    // One blocker per step, in step order, and each one carries PATHS rather
+    // than bare field names -- unambiguous in a 422 body, and what a form
+    // focuses. A step is never 'fail': an applicant who has answered nothing
+    // has answered nothing wrong.
+    const steps = ruleResults(answer).filter((result) => result.id.startsWith('step_'));
+    expect(steps.map((result) => result.id)).toEqual([
+      'step_borrower',
+      'step_farm',
+      'step_financials',
+      'step_request',
+    ]);
+    expect(steps.every((result) => result.status === 'unknown')).toBe(true);
+    expect(steps[0]?.missing).toContain('borrower.legal_name');
+    expect(steps[3]?.missing).toContain('request.amount_requested_minor');
+
+    expect(await snapshotsOf(appDraft)).toEqual([]);
+    expect((await readApplication(appDraft)).state).toBe('draft');
+  });
+
+  it('advances a complete, eligible draft and records what it was told', async () => {
+    const before = await eventCount(appComplete);
+
+    const answer = await post(borrower.token, {
+      machine: 'application',
+      subjectId: appComplete,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      from: 'draft',
+      to: 'submitted',
+      revision: 1,
+      effects: ['write_eligibility_snapshot'],
+    });
+
+    expect(await readApplication(appComplete)).toEqual({ state: 'submitted', revision: 1 });
+    expect(await eventCount(appComplete)).toBe(before + 1);
+
+    // Stamped by the database, not by the handler: `advanceApplication` patches
+    // `state` and nothing else, so a timestamp here can only have come from the
+    // trigger.
+    expect(await readSubmittedAt(appComplete)).not.toBeNull();
+
+    const rows = await snapshotsOf(appComplete);
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.revision).toBe(1);
+
+    // The snapshot has been through jsonb and back, which is the round trip
+    // RuleResult was shaped to survive. Parsing the stored results with the
+    // schema that owns the type is what proves it did: an optional property
+    // lost in transit would come back as a different object.
+    const stored = rows[0]?.eligibility;
+    expect(Array.isArray(stored)).toBe(true);
+    const evaluated = (stored as { productName: string; results: unknown[] }[])[0];
+    expect(evaluated?.productName).toBe(PRODUCT_NAME);
+    for (const result of evaluated?.results ?? []) {
+      expect(RuleResultSchema.safeParse(result).success).toBe(true);
+    }
+  });
+
+  it('does not restamp submitted_at when the application moves on', async () => {
+    // When the lender received the file is not a fact about the last thing that
+    // happened to it, and the trigger fires on every update.
+    const stamped = await readSubmittedAt(appComplete);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appComplete,
+      event: 'request_docs',
+      expectedRevision: 1,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(await readSubmittedAt(appComplete)).toBe(stamped);
+    // And no second snapshot: only `submit` declares the effect.
+    expect((await snapshotsOf(appComplete)).length).toBe(1);
+  });
+
+  it('writes no snapshot when the revision moved under the caller', async () => {
+    // The guard passes -- this payload is the complete one -- so the refusal
+    // comes from the revision-matched UPDATE, which is the only serialisation
+    // point there is. The effect runs after that update for exactly this
+    // reason: a snapshot written first would record a submission that never
+    // happened.
+    const answer = await post(borrower.token, {
+      machine: 'application',
+      subjectId: appStale,
+      event: 'submit',
+      expectedRevision: 1,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('revision_conflict');
+    expect(await snapshotsOf(appStale)).toEqual([]);
+    expect(await eventCount(appStale)).toBe(0);
+    expect(await readApplication(appStale)).toEqual({ state: 'draft', revision: 2 });
+    expect(await readSubmittedAt(appStale)).toBeNull();
+  });
+
+  it('refuses a payload no schema describes, rather than reading it as unfinished', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'application',
+      subjectId: appCorrupt,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('guard_refused');
+    expect(String(answer.payload['reason'])).toContain('schema');
+
+    // No blockers, because there are no criteria to show: the rule sets could
+    // not be evaluated at all. Degrading to an empty context instead would have
+    // rendered four "not answered yet" rows, which tells the applicant their
+    // form is unfinished when the truth is that their row is corrupt.
+    expect(blockersOf(answer)).toEqual([]);
+    expect(await snapshotsOf(appCorrupt)).toEqual([]);
+    expect((await readApplication(appCorrupt)).state).toBe('draft');
+  });
+
+  // A corrupt payload must not trap the application.
+  //
+  // `withdraw` declares no guard and no effect, so it never reads a rule set
+  // and there is nothing for an unparseable payload to prevent. Refusing it
+  // anyway was a lockout with no way out: after a submit the borrower can no
+  // longer write `data` at all -- application_update_own_draft permits an
+  // update only while the state is 'draft' -- so a row stranded by a schema
+  // change could be neither repaired nor abandoned by anyone, and needed a
+  // hand-written UPDATE against the database.
+  it('still lets the borrower walk away from an application it cannot read', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'application',
+      subjectId: appCorruptToWithdraw,
+      event: 'withdraw',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({ from: 'draft', to: 'withdrawn' });
+    expect(await readApplication(appCorruptToWithdraw)).toEqual({
+      state: 'withdrawn',
+      revision: 1,
+    });
+    expect(await eventCount(appCorruptToWithdraw)).toBe(1);
+
+    // Nothing was evaluated, so nothing was recorded as having been evaluated.
+    expect(await snapshotsOf(appCorruptToWithdraw)).toEqual([]);
   });
 });
 

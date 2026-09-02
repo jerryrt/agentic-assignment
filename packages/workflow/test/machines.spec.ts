@@ -198,6 +198,22 @@ describe('declared effects', () => {
     expect(outcome.ok === true && outcome.effects).toEqual([{ kind: 'create_loan' }]);
   });
 
+  /**
+   * The snapshot is what makes a decision reproducible: a lender reading an
+   * application months later sees the criteria as they stood when the borrower
+   * submitted, not as the product defines them now. Declaring it on the
+   * transition rather than writing it inline in the handler is what lets the
+   * browser say so before the round trip, from the same definition the server
+   * runs.
+   */
+  it('writes an eligibility snapshot when an application is submitted', () => {
+    const outcome = apply(applicationMachine, 'draft', 'submit', 'borrower', APPLICATION_CONTEXT);
+
+    expect(outcome.ok === true && outcome.effects).toEqual([
+      { kind: 'write_eligibility_snapshot' },
+    ]);
+  });
+
   it('posts a ledger entry when a release is disbursed', () => {
     const outcome = apply(
       creditReleaseMachine,

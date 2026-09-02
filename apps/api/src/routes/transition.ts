@@ -47,6 +47,7 @@
 import { appendWorkflowEvent, listWorkflowEvents, type DatabaseClient } from '@lj/db';
 import { createServiceRoleClient } from '@lj/db/service-role';
 import type { ApplicationState, WorkflowMachine } from '@lj/domain';
+import type { ProductEligibility } from '@lj/rules';
 import {
   applicationMachine,
   apply,
@@ -58,12 +59,15 @@ import { authenticateActor, bearerToken, type Actor } from '../../lib/actor.ts';
 import {
   advanceApplication,
   applicationReadableBy,
+  applicationTransitionNeedsEvaluation,
   asApplicationEvent,
-  buildApplicationGuardContext,
+  evaluateApplication,
   loadApplication,
+  UNEVALUATED_APPLICATION_CONTEXT,
+  type ApplicationEvaluation,
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
-import { unrunnableEffects } from '../../lib/effects.ts';
+import { runEffects, unrunnableEffects } from '../../lib/effects.ts';
 import { readApiEnvironment } from '../../lib/environment.ts';
 import { failure, success, type SubjectSnapshot } from '../../lib/http.ts';
 import { anyPermits, transitionsFrom } from '../../lib/machines.ts';
@@ -157,8 +161,35 @@ async function adjudicate(request: Request): Promise<Response> {
 
   // 4 -- the decision. Guards run in TypeScript because they need context, and
   // the context is evaluated rule sets that packages/rules produced just now.
-  const context = await buildApplicationGuardContext(service, subject);
-  const outcome = apply(applicationMachine, subject.state, narrowed, actor.role, context);
+  //
+  // Only for a transition that reads one. `withdraw` declares no guard and no
+  // effect, so evaluating for it would be work nobody looks at -- and, worse,
+  // a payload that does not parse would refuse it. That was a lockout: after a
+  // submit the borrower cannot write `data` any more, so a row stranded by a
+  // schema change could be neither repaired nor abandoned. A borrower's way
+  // out of their own application must not depend on rules with nothing to say
+  // about it.
+  let evaluation: ApplicationEvaluation | null = null;
+  if (applicationTransitionNeedsEvaluation(subject.state, narrowed)) {
+    const evaluated = await evaluateApplication(service, subject);
+    if (!evaluated.ok) {
+      // The stored payload matches no schema, so no rule set could be evaluated
+      // over it. 422 with no blockers: there is no criterion to show, and the
+      // alternative -- an empty context -- would render as four unanswered
+      // steps and tell the applicant their form is unfinished when their row is
+      // corrupt.
+      return failure(422, 'guard_refused', evaluated.reason, { blockers: [], current });
+    }
+    evaluation = evaluated.evaluation;
+  }
+
+  const outcome = apply(
+    applicationMachine,
+    subject.state,
+    narrowed,
+    actor.role,
+    evaluation?.context ?? UNEVALUATED_APPLICATION_CONTEXT,
+  );
 
   // 5 -- a guard refused, and said why.
   if (!outcome.ok) {
@@ -185,6 +216,20 @@ async function adjudicate(request: Request): Promise<Response> {
     );
   }
 
+  // A declared effect is one of the two things that make a transition need an
+  // evaluation, so reaching here without one is a contradiction between the
+  // check above and the machine definition. Stated rather than assumed,
+  // because the alternative to this branch is a snapshot recording an empty
+  // evaluation as though it were what the borrower was told.
+  if (outcome.effects.length > 0 && evaluation === null) {
+    return failure(
+      500,
+      'internal_error',
+      "'" + event + "' declares an effect but was adjudicated without an evaluation",
+      { blockers: [], current },
+    );
+  }
+
   return await commit(service, {
     actor,
     subject,
@@ -192,6 +237,7 @@ async function adjudicate(request: Request): Promise<Response> {
     expectedRevision,
     to: outcome.to,
     effects: outcome.effects,
+    eligibility: evaluation?.eligibility ?? [],
   });
 }
 
@@ -202,6 +248,11 @@ interface CommitRequest {
   readonly expectedRevision: number;
   readonly to: ApplicationState;
   readonly effects: readonly EffectSpec[];
+  /**
+   * The evaluation the decision above was taken on, carried through so an
+   * effect records what the guard read rather than re-reading it.
+   */
+  readonly eligibility: readonly ProductEligibility[];
 }
 
 /**
@@ -281,9 +332,40 @@ async function commit(
     );
   }
 
-  // 6c -- declared effects would run here, inside the same transaction as the
-  // state change. There are none to run: an unrunnable effect refused above,
-  // and no kind has an implementation yet (lib/effects.ts).
+  // 6c -- the declared effects, after the state change rather than before it.
+  //
+  // The order is forced by the same absence of a transaction the two writes
+  // above work around, and it is the right way round anyway: an effect written
+  // first would record a submission that the revision check then refused, and
+  // "a stale revision writes nothing" is a property this endpoint is required
+  // to have.
+  //
+  // What that costs is a window in which the state has moved and the effect has
+  // not. It is reported, never absorbed. For the one effect that exists the
+  // damage is bounded and repairable: the snapshot is derivable from the
+  // application's own payload at this revision, which is still in the database,
+  // so the missing row can be written afterwards. That is why this is a 500
+  // naming what did not land rather than an attempt to undo the transition --
+  // reversing it would append a second, false entry to an append-only log.
+  const effects = await runEffects(service, request.effects, {
+    applicationId: subject.id,
+    revision: advanced.revision,
+    eligibility: request.eligibility,
+  });
+  if (!effects.ok) {
+    return failure(
+      500,
+      'effect_write_failed',
+      'the application moved to ' +
+        request.to +
+        " but the declared effect '" +
+        effects.kind +
+        "' did not: " +
+        effects.reason +
+        '; the state change stands',
+      { blockers: [], current: advanced },
+    );
+  }
 
   return success({
     machine: 'application' satisfies WorkflowMachine,

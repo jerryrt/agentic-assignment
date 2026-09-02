@@ -6,6 +6,7 @@ import {
 import { provideRouter, withComponentInputBinding, withInMemoryScrolling } from '@angular/router';
 
 import { provideSupabaseConfig } from './core/config/supabase-config.ts';
+import { provideDatabaseClient } from './core/data/database-client.ts';
 import { routes } from './app.routes.ts';
 
 /**
@@ -32,6 +33,10 @@ import { routes } from './app.routes.ts';
  * rather than a module-level constant so a test can supply its own environment
  * without touching the build (see core/config/supabase-config.ts).
  *
+ * `provideDatabaseClient()` builds the one Supabase client from it. One, so
+ * that one session is persisted and refreshed: the auth service and every
+ * feature store share it (see core/data/database-client.ts).
+ *
  * There is no `provideHttpClient` here. `@lj/db` speaks to Supabase over its own
  * fetch, and `core/api` uses `fetch` directly, so adding Angular's HTTP client
  * would ship a second HTTP stack that nothing calls. Add it when something
@@ -42,6 +47,7 @@ export const appConfig: ApplicationConfig = {
     provideBrowserGlobalErrorListeners(),
     provideZonelessChangeDetection(),
     provideSupabaseConfig(),
+    provideDatabaseClient(),
     provideRouter(
       routes,
       withComponentInputBinding(),

@@ -37,6 +37,17 @@ export const applicationMachine = defineMachine<
   initial: 'draft',
   states: APPLICATION_STATES,
   transitions: [
+    /**
+     * Submitting records what the borrower was told.
+     *
+     * A product's criteria are content and they change; a decision made under
+     * the old ones has to stay explicable afterwards, so the evaluated
+     * eligibility is written out as it stood at this instant
+     * (plan/05-option2-application.md). It is declared here rather than written
+     * inline by the handler for the reason every effect is declared: the
+     * browser reads the machine too, so "submitting records your eligibility"
+     * is legible before the round trip, from the definition the server runs.
+     */
     {
       from: 'draft',
       event: 'submit',
@@ -47,6 +58,7 @@ export const applicationMachine = defineMachine<
           requireRules('the application is not complete', context.completeness),
           requireRules('no product matches this application', context.eligibility),
         ]),
+      effects: [{ kind: 'write_eligibility_snapshot' }],
     },
     { from: 'submitted', event: 'request_docs', to: 'docs_pending', actor: ['lender'] },
     {

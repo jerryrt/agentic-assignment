@@ -21,6 +21,7 @@
     "@angular/router": "22.1.4",
     "@lj/db": "workspace:*",
     "@lj/domain": "workspace:*",
+    "@lj/rules": "workspace:*",
     "@lj/ui": "workspace:*",
     "@lj/workflow": "workspace:*",
     "rxjs": "7.8.2",

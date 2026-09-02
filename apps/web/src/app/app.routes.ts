@@ -82,6 +82,12 @@ export const routes: Routes = [
   // ---- FEATURE ROUTES GO HERE, above the wildcard ----
 
   {
+    path: 'apply',
+    canActivate: [authGuard],
+    loadChildren: () => import('./features/apply/apply.routes.ts').then((m) => m.APPLY_ROUTES),
+  },
+
+  {
     path: '**',
     title: 'Page not found',
     loadComponent: () => import('./shared/not-found.page.ts').then((m) => m.NotFoundPage),
