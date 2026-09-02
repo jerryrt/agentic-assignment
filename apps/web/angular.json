@@ -59,6 +59,28 @@
         },
         "serve": {
           "builder": "@angular/build:dev-server",
+          "options": {
+            // Vite pre-bundles anything reached through node_modules, and the
+            // workspace packages are reached through pnpm's symlinks, so
+            // `@lj/ui` arrived here transpiled by plain esbuild with no Angular
+            // compilation.  Its components then needed the JIT compiler, which
+            // is not in the bundle, and every screen using one rendered nothing
+            // -- "JIT compilation failed for component class LjStateBadge".
+            // The production build is unaffected: it compiles those sources as
+            // part of its own program.  This was the whole inner loop for any
+            // screen with a shared component in it, and it was found by running
+            // the app rather than by any test (issue #33).
+            //
+            // Off wholesale rather than `{ "exclude": ["@lj/ui"] }`: that form
+            // replaces the builder's own optimizeDeps configuration, and the
+            // transitive dependencies of the workspace packages -- zod,
+            // @supabase/supabase-js, neither of them a dependency of apps/web
+            // itself -- then fail to resolve from the app root, which under
+            // pnpm's isolated node_modules they cannot.  The cost is a slower
+            // cold start; measured at under eight seconds, against a dev server
+            // that did not work at all.
+            "prebundle": false
+          },
           "configurations": {
             "production": {
               "buildTarget": "web:build:production"
