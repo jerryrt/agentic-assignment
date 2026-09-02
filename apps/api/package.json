@@ -10,7 +10,8 @@
     "dev": "node --watch dev/local-server.ts",
     "lint": "eslint .",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.portable.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.portable.json",
+    "build": "node tools/build.ts"
   },
   "dependencies": {
     "@lj/db": "workspace:*",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@lj/tsconfig": "workspace:*",
     "@types/node": "catalog:",
+    "esbuild": "0.28.2",
     "vitest": "catalog:"
   }
 }

@@ -40,6 +40,10 @@ export default [
       '**/dist/**',
       '**/.angular/**',
       '**/.turbo/**',
+      '**/.vercel/**',
+      // Bundled output. Generated files are never hand-edited, so linting them
+      // reports on a generator's choices rather than on anything anyone wrote.
+      '**/generated/**',
       '**/coverage/**',
       '**/node_modules/**',
       'supabase/.temp/**',

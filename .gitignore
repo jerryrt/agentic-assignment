@@ -23,3 +23,6 @@ supabase/.env
 .env.*.local
 coverage/
 out-tsc/
+
+# Bundled serverless functions, emitted by apps/api's build.
+apps/api/generated/

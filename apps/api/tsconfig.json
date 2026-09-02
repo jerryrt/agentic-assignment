@@ -10,5 +10,8 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["api/**/*.ts", "dev/**/*.ts", "test/**/*.ts"]
+  // `api/` is excluded on purpose: each file there is a one-line re-export of
+  // a generated bundle that has no declarations, and the handler it re-exports is
+  // typechecked at its source under `src/routes`.
+  "include": ["src/**/*.ts", "lib/**/*.ts", "dev/**/*.ts", "test/**/*.ts"]
 }
