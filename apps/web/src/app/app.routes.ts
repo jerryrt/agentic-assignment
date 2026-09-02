@@ -70,13 +70,20 @@ export const routes: Routes = [
     loadComponent: () => import('./shared/home.page.ts').then((m) => m.HomePage),
   },
 
-  // The lender root. `roleGuard` shapes navigation only -- row-level security
-  // is what actually keeps a borrower out of this data (see auth.guards.ts).
+  // The lender root: the work queue, and one request opened out of it.
+  // `roleGuard` shapes navigation only -- row-level security is what actually
+  // keeps a borrower out of this data (see auth.guards.ts), and every decision
+  // taken through these screens is re-checked against the machine by
+  // POST /api/transition.
+  //
+  // It replaced `shared/home.page.ts`, which said in its own header that a
+  // feature scope would: a placeholder root is indistinguishable from a broken
+  // one, and the desk now has work on it.
   {
     path: 'lender',
-    title: 'Lending desk',
     canActivate: [authGuard, roleGuard('lender', 'admin')],
-    loadComponent: () => import('./shared/home.page.ts').then((m) => m.HomePage),
+    loadChildren: () =>
+      import('./features/lender/lender.routes.ts').then((m) => m.LENDER_ROUTES),
   },
 
   // ---- FEATURE ROUTES GO HERE, above the wildcard ----
