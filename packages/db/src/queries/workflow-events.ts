@@ -13,9 +13,9 @@
  * (CLAUDE.md sections 8 and 9).
  */
 
-import type { DatabaseClient } from '../client';
-import type { Database } from '../database.types';
-import { unwrapList, unwrapMaybe } from '../errors';
+import type { DatabaseClient } from '../client.js';
+import type { Database } from '../database.types.js';
+import { unwrapList, unwrapMaybe } from '../errors.js';
 
 type WorkflowEventTable = Database['public']['Tables']['workflow_event'];
 

@@ -25,22 +25,22 @@ export type {
   Tables,
   TablesInsert,
   TablesUpdate,
-} from './database.types';
-export { Constants } from './database.types';
+} from './database.types.js';
+export { Constants } from './database.types.js';
 
-export type { AnonClientConfig, EnvironmentSource } from './config';
+export type { AnonClientConfig, EnvironmentSource } from './config.js';
 export {
   MissingConfigurationError,
   readAnonClientConfig,
   requireVariable,
   SUPABASE_ANON_KEY_VAR,
   SUPABASE_URL_VAR,
-} from './config';
+} from './config.js';
 
-export type { DatabaseClient } from './client';
-export { createAnonClient, createAnonClientForAccessToken } from './client';
+export type { DatabaseClient } from './client.js';
+export { createAnonClient, createAnonClientForAccessToken } from './client.js';
 
-export type { QueryOutcome } from './errors';
-export { DatabaseQueryError, unwrapList, unwrapMaybe } from './errors';
+export type { QueryOutcome } from './errors.js';
+export { DatabaseQueryError, unwrapList, unwrapMaybe } from './errors.js';
 
-export * from './queries';
+export * from './queries/index.js';
