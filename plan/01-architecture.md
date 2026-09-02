@@ -76,6 +76,7 @@ number. Verified against the npm registry and the Actions marketplace on 2026-09
 | `@supabase/supabase-js` | `2.112.4` | |
 | Supabase CLI | `2.116.0` | Runs the local stack in Docker. |
 | Vercel CLI | `59.11.0` | Only needed to publish. |
+| Playwright | `1.62.1` | The container image `mcr.microsoft.com/playwright:v1.62.1-noble` must match this exactly, or a visual baseline generated in one place fails in the other. |
 
 ### The TypeScript trap
 
