@@ -25,6 +25,8 @@ export * from './engine/exact.ts';
 export * from './engine/agreement.ts';
 export * from './engine/predicate.ts';
 
+export * from './application/context.ts';
+
 export * from './eligibility/context.ts';
 export * from './eligibility/fields.ts';
 export * from './eligibility/criteria.ts';
