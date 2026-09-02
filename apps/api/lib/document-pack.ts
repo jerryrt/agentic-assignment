@@ -1,15 +1,32 @@
 /**
- * The document pack: turning a product's `required_docs` into the slots one
- * application has to fill.
+ * The document pack in both directions: turning a product's `required_docs`
+ * into the slots one application has to fill, and reading those slots back into
+ * what the completeness rules judge them by.
  *
- * Nothing here decides what a pack may say: `parseRequiredDocs` in
- * packages/rules owns that, and it fails closed. This is the part that package
- * cannot do, because it is the part that needs the database.
+ * The two belong together because they are two halves of one contract -- what a
+ * slot was created with is what it is later judged against. Neither half
+ * decides anything: `parseRequiredDocs` owns what a pack may say and
+ * `evaluateCompleteness` owns what complete means, both in packages/rules, and
+ * both fail closed. This is the part that package cannot do, because it is the
+ * part that needs the database.
  */
 
-import { getLoanProduct, type DatabaseClient, type DocumentSlotInsert } from '@lj/db';
-import { UuidSchema, type ApplicationData } from '@lj/domain';
-import { parseRequiredDocs, type RequiredDocSlot } from '@lj/rules';
+import {
+  getLoanProduct,
+  listDocumentSlots,
+  listDocumentUploadsForApplication,
+  type DatabaseClient,
+  type DocumentSlotInsert,
+  type DocumentUploadRow,
+} from '@lj/db';
+import { DocumentSlotStateSchema, UuidSchema, type ApplicationData } from '@lj/domain';
+import {
+  parseRequiredDocs,
+  type DocumentContext,
+  type DocumentSlotView,
+  type ExtractedField,
+  type RequiredDocSlot,
+} from '@lj/rules';
 
 /**
  * The pack a transition is about to generate, or why it cannot be.
@@ -115,4 +132,139 @@ export function documentSlotRows(
     required: slot.required,
     extract_required: [...slot.extractRequired],
   }));
+}
+
+/* -------------------------------------------------------------------------
+ * Reading a pack back
+ * ---------------------------------------------------------------------- */
+
+/**
+ * `extracted` as packages/rules reads it.
+ *
+ * The column is jsonb and @lj/domain leaves it opaque, because the confidence
+ * floor and the ocr-versus-human distinction are rules and live above the
+ * persistence layer. The wire shape is the one `0006_documents.sql` documents
+ * and apps/web reads:
+ *
+ *     { "<field>": { "value": <json>, "confidence_basis_points": <int>,
+ *                    "source": "ocr" | "human" } }
+ *
+ * snake_case on the wire, camelCase in the rules' own view of it, and this is
+ * the boundary between the two. A local reader rather than a shared one only
+ * because there is not yet a shared one -- when `parseExtractedFields` lands in
+ * packages/rules, this function goes and its callers import that instead. It is
+ * deliberately identical in behaviour so that the swap changes nothing.
+ *
+ * A field that does not parse is DROPPED rather than admitted with a default.
+ * Dropping makes the slot unreadable, which blocks the pack; admitting would
+ * let a malformed row satisfy a requirement. Failing closed is the only
+ * direction available where the alternative is a document nobody checked.
+ */
+export function parseExtractedFields(
+  value: unknown,
+): Readonly<Record<string, ExtractedField>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  const fields: Record<string, ExtractedField> = {};
+  for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      continue;
+    }
+    const entry = raw as Record<string, unknown>;
+    const confidence = entry['confidence_basis_points'];
+    const source = entry['source'];
+    if (typeof confidence !== 'number' || !Number.isInteger(confidence)) {
+      continue;
+    }
+    // Exactly these two strings. Anything else is a source nothing has decided
+    // how to weigh, and the safe reading of an unknown source is the machine's.
+    if (source !== 'ocr' && source !== 'human') {
+      continue;
+    }
+    fields[name] = {
+      value: entry['value'] ?? null,
+      confidenceBasisPoints: confidence,
+      source,
+    };
+  }
+  return fields;
+}
+
+/** The newest upload per slot, from one list already ordered newest first. */
+function latestUploadBySlot(
+  uploads: readonly DocumentUploadRow[],
+): ReadonlyMap<string, DocumentUploadRow> {
+  const latest = new Map<string, DocumentUploadRow>();
+  for (const upload of uploads) {
+    if (!latest.has(upload.slot_id)) {
+      latest.set(upload.slot_id, upload);
+    }
+  }
+  return latest;
+}
+
+/**
+ * Today, as the rules take it.
+ *
+ * UTC, and stated rather than defaulted. `valid_until` is a calendar date in
+ * the place the document was issued (see the note in @lj/domain), the server's
+ * own zone is an accident of where the function happens to run, and a
+ * borderline expiry must not depend on which region answered the request. The
+ * clock is injected because a rule that called Date.now() could not be tested
+ * and could not be replayed against the date a decision was actually made.
+ */
+export function todayInUtc(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * What the completeness rules read: every slot, with the extraction from the
+ * file that currently satisfies it.
+ *
+ * Two round trips for a whole pack rather than one per slot -- a five-slot pack
+ * asked one query at a time is six requests to answer one guard.
+ *
+ * The terms come from the SLOT and never from the product: `extract_required`
+ * was copied onto the row when the pack was generated, and a product whose list
+ * has been edited since must not change what an already generated slot is
+ * judged against.
+ */
+export async function buildDocumentContext(
+  client: DatabaseClient,
+  applicationId: string,
+  today: string = todayInUtc(),
+): Promise<DocumentContext> {
+  const [slots, uploads] = await Promise.all([
+    listDocumentSlots(client, applicationId),
+    listDocumentUploadsForApplication(client, applicationId),
+  ]);
+  const latest = latestUploadBySlot(uploads);
+
+  const views: DocumentSlotView[] = [];
+  for (const slot of slots) {
+    // The generated types describe `state` as text, because the column is text:
+    // legality lives in workflow_transition, not in a check constraint. A state
+    // no machine declares must not reach the rules as a string that happens to
+    // typecheck, so it is narrowed here -- and a slot that cannot be narrowed is
+    // left out, which leaves the pack short a slot it cannot judge and
+    // therefore blocks rather than passes.
+    const state = DocumentSlotStateSchema.safeParse(slot.state);
+    if (!state.success) {
+      continue;
+    }
+    const upload = latest.get(slot.id);
+    views.push({
+      code: slot.code,
+      label: slot.label,
+      required: slot.required,
+      state: state.data,
+      validUntil: slot.valid_until,
+      extractRequired: slot.extract_required,
+      extracted: upload === undefined ? {} : parseExtractedFields(upload.extracted),
+    });
+  }
+
+  return { today, slots: views };
 }

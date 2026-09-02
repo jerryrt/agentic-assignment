@@ -389,6 +389,154 @@ async function readSlot(slotId: string): Promise<{ state: string; revision: numb
   return { state: data.state, revision: data.revision };
 }
 
+/**
+ * A file recorded against a slot, with an extraction written by hand.
+ *
+ * The values are the input to the completeness rules, so they are stated here
+ * rather than produced by an upload: what is under test is the verdict, and
+ * driving four uploads through storage to reach it would make these cases
+ * depend on the extractor as well.
+ */
+async function insertUpload(values: {
+  slotId: string;
+  filename: string;
+  extracted: Json;
+}): Promise<string> {
+  const row = await insertDocumentUpload(service, {
+    slot_id: values.slotId,
+    storage_path: `fixture/${values.slotId}/${values.filename}`,
+    filename: values.filename,
+    bytes: 4,
+    mime: 'application/pdf',
+    extracted: values.extracted,
+    extraction_state: 'extracted',
+  });
+  if (row === null) {
+    throw new Error('fixture document_upload failed');
+  }
+  return row.id;
+}
+
+/** A machine reading the rules will trust: above the floor, and from the ocr. */
+function readable(value: Json): Json {
+  return { value, confidence_basis_points: 9_200, source: 'ocr' };
+}
+
+/**
+ * Missing, stale and unreadable, in one pack, plus a slot that is finished.
+ *
+ * The three are kept apart because the borrower's next action differs in each
+ * case -- upload something, upload a newer one, upload a clearer scan -- and
+ * collapsing them into one red dot is the version plan/04 calls lazy.
+ */
+async function buildIncompletePack(): Promise<void> {
+  const [, stale, unreadable] = await Promise.all([
+    // FINISHED: accepted, no expiry, both required fields read.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'accepted',
+      extractRequired: ['total_acres', 'owner_name'],
+    }),
+    // STALE: accepted, and expired years ago.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      state: 'accepted',
+      extractRequired: ['valid_until'],
+      validUntil: '2020-01-31',
+    }),
+    // UNREADABLE: accepted, but the figure came back below the floor.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      state: 'accepted',
+      extractRequired: ['net_farm_income'],
+    }),
+    // MISSING: nothing uploaded at all.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'required',
+    }),
+  ]);
+
+  const finished = (await readSlotsWithIds(appPackIncomplete)).find(
+    (slot) => slot.code === 'land_title',
+  );
+  await Promise.all([
+    insertUpload({
+      slotId: finished?.id ?? '',
+      filename: 'deed_1240ac_smith-farms.pdf',
+      extracted: { total_acres: readable(1240), owner_name: readable('Smith Farms') },
+    }),
+    insertUpload({
+      slotId: stale ?? '',
+      filename: 'crop_insurance_2020-01-31.pdf',
+      extracted: { valid_until: readable('2020-01-31') },
+    }),
+    insertUpload({
+      slotId: unreadable ?? '',
+      filename: 'scan0003.pdf',
+      // Below EXTRACTION_CONFIDENCE_FLOOR_BASIS_POINTS, so the rules read it as
+      // not read at all -- which is what "could not read" means.
+      extracted: {
+        net_farm_income: { value: 18_420_000, confidence_basis_points: 4_100, source: 'ocr' },
+      },
+    }),
+  ]);
+}
+
+async function buildCompletePack(): Promise<void> {
+  const [title, identity] = await Promise.all([
+    insertSlot({
+      applicationId: appPackComplete,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'accepted',
+      extractRequired: ['total_acres'],
+    }),
+    insertSlot({
+      applicationId: appPackComplete,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'accepted',
+      extractRequired: [],
+      validUntil: '2099-12-31',
+    }),
+  ]);
+
+  await Promise.all([
+    insertUpload({
+      slotId: title ?? '',
+      filename: 'deed_980ac_fenwick-grain.pdf',
+      extracted: { total_acres: readable(980) },
+    }),
+    insertUpload({
+      slotId: identity ?? '',
+      filename: 'id_2099-12-31.pdf',
+      extracted: { valid_until: readable('2099-12-31') },
+    }),
+  ]);
+}
+
+async function readSlotsWithIds(
+  applicationId: string,
+): Promise<{ id: string; code: string }[]> {
+  const { data, error } = await service
+    .from('document_slot')
+    .select('id, code')
+    .eq('application_id', applicationId);
+  if (error !== null || data === null) {
+    throw new Error(`could not read slots of ${applicationId}: ${error?.message ?? 'none'}`);
+  }
+  return data;
+}
+
 async function readUploads(slotId: string): Promise<
   {
     id: string;
@@ -553,6 +701,12 @@ let appForUpload: string;
 let slotForFullRead: string;
 let slotForPartialRead: string;
 let slotWithNoFile: string;
+/** docs_pending, org alpha, a pack failing in all three distinct ways. */
+let appPackIncomplete: string;
+/** docs_pending, org alpha, every required slot accepted and valid. */
+let appPackComplete: string;
+/** docs_pending, org alpha, with no slots at all. */
+let appPackEmpty: string;
 /** Every object this run put in the bucket, removed in afterAll. */
 const storedObjects: string[] = [];
 /** submitted, org alpha, naming a product whose document pack does not parse. */
@@ -681,6 +835,9 @@ beforeAll(async () => {
     appForPack,
     appForDecision,
     appForUpload,
+    appPackIncomplete,
+    appPackComplete,
+    appPackEmpty,
   ] = await Promise.all([
       // Every application that reaches `submitted` carries the payload that
       // took it there: `request_docs` reads the pack off the product the
@@ -783,7 +940,34 @@ beforeAll(async () => {
         revision: DOCS_PENDING_REVISION,
         data: completePayload(productAlpha),
       }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
     ]);
+
+  // A pack that fails in all three distinct ways at once, plus one slot that is
+  // simply finished. Written straight into their final states, because what is
+  // under test is the evaluation and not the walk that produced it.
+  await buildIncompletePack();
+  await buildCompletePack();
 
   [slotToAccept, slotToReject, slotUntouched, slotAwaitingDecision] = await Promise.all([
     insertSlot({
@@ -868,6 +1052,9 @@ afterAll(async () => {
       appForPack,
       appForDecision,
       appForUpload,
+      appPackIncomplete,
+      appPackComplete,
+      appPackEmpty,
     ]);
   // document_slot and document_upload rows go with their application, by the
   // cascades in 0006_documents.sql.
@@ -1209,25 +1396,27 @@ describe('a legal transition', () => {
 
   /**
    * An unevaluated rule set is a refusal, not a pass (see the handoff on #9).
-   * `document_slot` has no table yet, so nothing can evaluate the document
-   * pack, and `begin_review` must therefore refuse -- with a reason that says
-   * the criteria were not evaluated rather than that they were not met.
+   * An application at `docs_pending` with NO slots evaluates to an empty set,
+   * and requireRules reads that as "the caller did not evaluate this" -- which
+   * is the right answer here rather than an accident: nothing asked this
+   * applicant for documents, so there is nothing a lender could have reviewed.
    */
   it('refuses a guarded transition whose criteria nothing has evaluated', async () => {
-    const before = await eventCount(appForSuccess);
+    const before = await eventCount(appPackEmpty);
 
     const answer = await post(lender.token, {
       machine: 'application',
-      subjectId: appForSuccess,
+      subjectId: appPackEmpty,
       event: 'begin_review',
-      expectedRevision: SUBMITTED_REVISION + 1,
+      expectedRevision: DOCS_PENDING_REVISION,
     });
 
     expect(answer.status).toBe(422);
     expect(answer.payload['code']).toBe('guard_refused');
     expect(String(answer.payload['reason'])).toContain('not been evaluated');
-    expect(await eventCount(appForSuccess)).toBe(before);
-    expect((await readApplication(appForSuccess)).state).toBe('docs_pending');
+    expect(blockersOf(answer)).toEqual([]);
+    expect(await eventCount(appPackEmpty)).toBe(before);
+    expect((await readApplication(appPackEmpty)).state).toBe('docs_pending');
   });
 });
 
@@ -2203,6 +2392,86 @@ describe('correcting what the extractor could not read', () => {
     expect(answer.status).toBe(404);
     expect(answer.payload['code']).toBe('subject_not_found');
   });
+});
+
+// The guard that decides whether a lender may start reading a file. Its whole
+// content is `evaluateCompleteness`, which is not restated here: what these
+// cases assert is that the API hands it the right context and reports its
+// verdict without flattening it.
+describe('beginning a review', () => {
+  it('refuses with a blocker per slot, keeping the three failures apart', async () => {
+    const before = await eventCount(appPackIncomplete);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appPackIncomplete,
+      event: 'begin_review',
+      expectedRevision: DOCS_PENDING_REVISION,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('guard_refused');
+    expect(String(answer.payload['reason'])).toContain('document pack');
+
+    const byId = new Map(ruleResults(answer).map((result) => [result.id, result]));
+
+    // MISSING -- nothing uploaded. `unknown`, not `fail`: nothing has gone
+    // wrong, the file is simply not there yet, and the next action is to send
+    // one. It names the slot as the outstanding input.
+    const missing = byId.get('document_slot.id_verification');
+    expect(missing?.status).toBe('unknown');
+    expect(missing?.missing).toContain('id_verification');
+    expect(String(missing?.explain)).toContain('upload');
+
+    // STALE -- accepted, and out of date. A real failure with a different next
+    // action: send a NEWER one.
+    const stale = byId.get('document_slot.crop_insurance');
+    expect(stale?.status).toBe('fail');
+    expect(String(stale?.explain)).toContain('2020-01-31');
+    expect(String(stale?.explain)).toContain('current');
+
+    // UNREADABLE -- accepted, current, and the figure came back below the
+    // confidence floor. Next action: a clearer scan, or type the value in.
+    const unreadable = byId.get('document_slot.tax_return_2024');
+    expect(unreadable?.status).toBe('fail');
+    expect(String(unreadable?.explain)).toContain('Could not read');
+    expect(String(unreadable?.explain)).toContain('net farm income');
+
+    // Three failures, three explanations, and no two the same.
+    const explanations = new Set([missing?.explain, stale?.explain, unreadable?.explain]);
+    expect(explanations.size).toBe(3);
+
+    // The finished slot is not a blocker. Blockers are what stands in the way,
+    // not the whole checklist.
+    expect(byId.has('document_slot.land_title')).toBe(false);
+
+    expect(await eventCount(appPackIncomplete)).toBe(before);
+    expect((await readApplication(appPackIncomplete)).state).toBe('docs_pending');
+  });
+
+  it('passes once every required slot is accepted and valid', async () => {
+    const before = await eventCount(appPackComplete);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appPackComplete,
+      event: 'begin_review',
+      expectedRevision: DOCS_PENDING_REVISION,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      from: 'docs_pending',
+      to: 'under_review',
+      revision: DOCS_PENDING_REVISION + 1,
+    });
+    expect(await readApplication(appPackComplete)).toEqual({
+      state: 'under_review',
+      revision: DOCS_PENDING_REVISION + 1,
+    });
+    expect(await eventCount(appPackComplete)).toBe(before + 1);
+  });
+
 });
 
 // `credit_release` is the last machine without a table. `document_slot` had one
