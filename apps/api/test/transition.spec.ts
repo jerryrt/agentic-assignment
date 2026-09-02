@@ -34,6 +34,7 @@ import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { runEffects } from '../lib/effects.ts';
+import { POST as CORRECTION } from '../src/routes/documents-correction.ts';
 import { POST as DOWNLOAD_URL } from '../src/routes/documents-download-url.ts';
 import { POST as UPLOAD_URL } from '../src/routes/documents-upload-url.ts';
 import { POST } from '../src/routes/transition.ts';
@@ -41,6 +42,7 @@ import { POST } from '../src/routes/transition.ts';
 const TRANSITION_URL = 'https://lj-api.example/api/transition';
 const UPLOAD_URL_URL = 'https://lj-api.example/api/documents/upload-url';
 const DOWNLOAD_URL_URL = 'https://lj-api.example/api/documents/download-url';
+const CORRECTION_URL = 'https://lj-api.example/api/documents/correction';
 
 // `supabase status` resolves supabase/config.toml relative to its working
 // directory, and vitest runs with the package directory as cwd.
@@ -2052,6 +2054,155 @@ describe('uploading a document', () => {
     expect((await readUploads(slotId)).length).toBe(1);
     expect(await readSlot(slotId)).toEqual({ state: 'rejected', revision: 3 });
   }, 30_000);
+});
+
+// Extraction proposes and a human confirms (plan/04). Once a person has typed a
+// value in, the machine's confidence in its own reading stops being the
+// question -- @lj/rules trusts `source: 'human'` whatever the confidence says.
+describe('correcting what the extractor could not read', () => {
+  it('appends a corrected reading and leaves the original alone', async () => {
+    const before = await readUploads(slotForPartialRead);
+    expect(before.length).toBe(1);
+    const original = before[0];
+    expect(original?.extraction_state).toBe('partial');
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: original?.id,
+      field: 'net_farm_income',
+      value: 18_420_000,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      slotId: slotForPartialRead,
+      field: 'net_farm_income',
+      source: 'human',
+      // A correction is not a transition: nothing moved, so a caller holding
+      // this revision still holds a current one.
+      state: 'extracted',
+      revision: 2,
+    });
+
+    const after = await readUploads(slotForPartialRead);
+    expect(after.length).toBe(2);
+
+    // The newest row carries the human value, at the same object: a correction
+    // is a claim about what the file says, not a different file.
+    const corrected = after[0];
+    expect(corrected?.extraction_state).toBe('corrected');
+    expect(corrected?.storage_path).toBe(original?.storage_path);
+    const field = extractedField(corrected as { extracted: Json }, 'net_farm_income');
+    expect(field?.value).toBe(18_420_000);
+    expect(field?.source).toBe('human');
+
+    // And the original is exactly as the extractor left it. document_upload has
+    // no UPDATE grant for anyone, service role included, and this is what that
+    // buys: "what did the machine actually read" survives somebody disagreeing.
+    expect(after[1]).toEqual(original);
+
+    // Attributable, because a value a lender relies on has to be traceable to
+    // whoever put it there.
+    const events = await listWorkflowEvents(service, 'document_slot', slotForPartialRead);
+    const latest = events.at(-1);
+    expect(latest).toMatchObject({
+      machine: 'document_slot',
+      subject_id: slotForPartialRead,
+      event: 'correct',
+      from_state: 'extracted',
+      to_state: 'extracted',
+      actor_id: borrower.id,
+      actor_role: 'borrower',
+    });
+  });
+
+  /**
+   * The lender's remedy for a document they do not believe is `reject`, which
+   * is the decision they hold. Letting the party who decides also write the
+   * evidence they decide on is a different system from the one plan/04
+   * describes.
+   */
+  it('refuses a lender', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+    const answer = await postTo(CORRECTION, CORRECTION_URL, lender.token, {
+      slotId: slotForPartialRead,
+      uploadId: uploads[0]?.id,
+      field: 'net_farm_income',
+      value: 1,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  // The optimistic-concurrency check an append-only table can have: correcting
+  // a superseded reading would append a new newest row carrying values from a
+  // file that has already been replaced.
+  it('refuses a correction to a reading that has been superseded', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+    const superseded = uploads.at(-1);
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: superseded?.id,
+      field: 'net_farm_income',
+      value: 2,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  it('refuses a field the document was never asked for', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: uploads[0]?.id,
+      field: 'anything_at_all',
+      value: 'invented',
+    });
+
+    expect(answer.status).toBe(422);
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  /**
+   * A fractional figure would be stored, shown, and then silently ignored by
+   * the cross-document comparison the correction exists to satisfy: those rules
+   * read integers, because money is integer minor units.
+   */
+  it('refuses a value the rules could not compare', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+
+    for (const value of [null, 12.5, { typed: true }, '']) {
+      const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+        slotId: slotForPartialRead,
+        uploadId: uploads[0]?.id,
+        field: 'net_farm_income',
+        value,
+      });
+      expect(answer.status).toBe(400);
+    }
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  it('hides a slot on an application the caller does not own', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, otherBorrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: uploads[0]?.id,
+      field: 'net_farm_income',
+      value: 5,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
 });
 
 // `credit_release` is the last machine without a table. `document_slot` had one
