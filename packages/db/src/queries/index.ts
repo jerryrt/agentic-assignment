@@ -11,6 +11,7 @@
 
 export * from './application-decisions.ts';
 export * from './applications.ts';
+export * from './eligibility-snapshots.ts';
 export * from './loan-products.ts';
 export * from './organisations.ts';
 export * from './profiles.ts';
