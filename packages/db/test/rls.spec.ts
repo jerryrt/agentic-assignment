@@ -199,6 +199,8 @@ let eventId: number; // the log row for appReviewed
 let slotReviewed: string; // a required slot on appReviewed, borrower A
 let slotOther: string; // a required slot on appOther, borrower B
 let uploadReviewed: string; // the file submitted against slotReviewed
+let slotEventReviewed: number; // a transition on borrower A's slot
+let slotEventOther: number; // a transition on borrower B's slot
 /**
  * A real object in the private bucket, so the storage assertions are about a
  * policy refusing rather than about a file that is not there. The path is the
@@ -518,6 +520,47 @@ beforeAll(async () => {
     throw new Error(`fixture document_upload failed: ${upload.error?.message ?? 'no row'}`);
   }
   uploadReviewed = upload.data.id;
+
+  // A transition on each borrower's slot, so "reads their own history" and
+  // "reads nobody else's" are both assertions about rows that exist. 0006
+  // created document_slot without a workflow_event clause, so until 0008 these
+  // were readable by nobody and a document timeline rendered empty with nothing
+  // to distinguish that from a document with no history (issue #58).
+  const slotEvents = await service
+    .from('workflow_event')
+    .insert([
+      {
+        machine: 'document_slot',
+        subject_id: slotReviewed,
+        from_state: 'required',
+        to_state: 'uploaded',
+        event: 'upload',
+        actor_id: borrowerA.id,
+        actor_role: 'borrower',
+      },
+      {
+        machine: 'document_slot',
+        subject_id: slotOther,
+        from_state: 'required',
+        to_state: 'uploaded',
+        event: 'upload',
+        actor_id: borrowerB.id,
+        actor_role: 'borrower',
+      },
+    ])
+    .select('id, subject_id');
+  if (slotEvents.error !== null || slotEvents.data === null) {
+    throw new Error(`fixture slot workflow_event failed: ${slotEvents.error?.message ?? 'no rows'}`);
+  }
+  const slotEventFor = (slotId: string): number => {
+    const row = slotEvents.data?.find((e) => e.subject_id === slotId);
+    if (row === undefined) {
+      throw new Error(`fixture slot event for ${slotId} did not come back as inserted`);
+    }
+    return row.id;
+  };
+  slotEventReviewed = slotEventFor(slotReviewed);
+  slotEventOther = slotEventFor(slotOther);
 
   // A real object in the private bucket, put there with the service role. It
   // matters that this exists: without it, every "cannot read another
@@ -1346,6 +1389,50 @@ describe('the document pack', () => {
       .select('id')
       .eq('application_id', appDraft);
     expect(check.data ?? []).toEqual([]);
+  });
+});
+
+describe("a document slot's transition history", () => {
+  // THE POSITIVE CONTROL, and the reason the refusals below mean anything.
+  // Before 0008 this failed: no policy admitted a document_slot event, so the
+  // log was readable by nobody and every "cannot read" assertion would have
+  // passed against rows nobody could reach.
+  it('is read by the borrower whose document it is', () => {
+    return clientA
+      .from('workflow_event')
+      .select('id, event')
+      .eq('id', slotEventReviewed)
+      .single()
+      .then(({ data, error }) => {
+        expect(error).toBeNull();
+        expect(data?.event).toBe('upload');
+      });
+  });
+
+  it('is not read by another borrower', async () => {
+    const rows = readable(
+      await clientB.from('workflow_event').select('id').eq('machine', 'document_slot'),
+    );
+    expect(rows.map((row) => row.id)).not.toContain(slotEventReviewed);
+    expect(rows.map((row) => row.id)).toContain(slotEventOther);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    const mine = readable(
+      await clientLender.from('workflow_event').select('id').eq('machine', 'document_slot'),
+    );
+    expect(mine.map((row) => row.id)).toContain(slotEventReviewed);
+
+    const theirs = readable(
+      await clientLenderBeta.from('workflow_event').select('id').eq('machine', 'document_slot'),
+    );
+    expect(theirs.map((row) => row.id)).not.toContain(slotEventReviewed);
+  });
+
+  it('is read by nobody anonymous', async () => {
+    expect(
+      readable(await anon.from('workflow_event').select('id').eq('machine', 'document_slot')),
+    ).toEqual([]);
   });
 });
 

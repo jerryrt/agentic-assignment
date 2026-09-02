@@ -3,10 +3,26 @@ import { z } from 'zod';
 /**
  * Money, as integer minor units (CLAUDE.md section 10). No floats, ever.
  *
- * The hard part is the boundary. Postgres stores money as `numeric(14,2)` and
- * PostgREST renders it as a JSON *string* -- '1234.56' -- precisely so that no
- * client has to route the value through a binary float. The obvious conversion
- * throws that away:
+ * The hard part is the boundary. Postgres stores money as `numeric(14,2)`, and
+ * PostgREST renders it as a JSON NUMBER -- `1234.56` -- unless the select asks
+ * for `column::text`, which renders the string '1234.56'. Both spellings are in
+ * this codebase and both are read below.
+ *
+ * This header asserted the opposite for three phases: that PostgREST always
+ * sent a string. It does not, and MoneyFromNumericSchema being a `z.string()`
+ * meant it would have refused every real row it was pointed at. It went
+ * unnoticed because the only column it was applied to is null in every fixture,
+ * and two delivery-layer modules quietly worked around it instead of asking
+ * why (issue #57).
+ *
+ * A number is safe to accept, and that is measured rather than assumed: the
+ * widest value numeric(14,2) can hold is 999,999,999,999.99, which is fourteen
+ * significant digits, and a double round-trips fifteen to seventeen. So every
+ * value the column can carry survives the wire intact, and rendering it back to
+ * its shortest round-tripping decimal recovers the original digits exactly. The
+ * float is never arithmetic on; it is only printed.
+ *
+ * What must not happen is the obvious conversion, which throws that away:
  *
  *     Math.trunc(Number('0.29') * 100)   // 28, not 29
  *     Math.trunc(Number('1.15') * 100)   // 114, not 115
@@ -242,15 +258,59 @@ export const MoneyMinorUnitsSchema = z
   .max(MAX_MONEY_MINOR_UNITS)
   .transform((value) => value as Money);
 
-/** An amount arriving from Postgres as `numeric` text. */
-export const MoneyFromNumericSchema = z.string().transform((text, context) => {
-  try {
-    return moneyFromNumericString(text);
-  } catch (error) {
-    context.addIssue({
-      code: 'custom',
-      message: error instanceof Error ? error.message : "Invalid numeric value '" + text + "'",
-    });
-    return z.NEVER;
+/**
+ * An amount arriving from Postgres, in either spelling PostgREST uses.
+ *
+ * A plain `select=amount` gives a JSON number; `select=amount::text` gives a
+ * string. Both are accepted, because both are in this codebase and a boundary
+ * that took only one of them would be worked around locally -- which is exactly
+ * what happened twice before this accepted the pair (issue #57).
+ *
+ * A number is turned into its shortest round-tripping decimal and handed to the
+ * exact parser. No arithmetic is performed on the double, so nothing is rounded
+ * on the way through; `String` is a rendering, not a calculation. NaN and the
+ * infinities render as words the numeric grammar rejects, so they fail here
+ * rather than needing a check of their own.
+ */
+export const MoneyFromNumericSchema = z
+  .union([z.string(), z.number()])
+  .transform((value, context) => {
+    const text = typeof value === 'string' ? value : String(value);
+    try {
+      return moneyFromNumericString(text);
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : "Invalid numeric value '" + text + "'",
+      });
+      return z.NEVER;
+    }
+  });
+
+/**
+ * A nullable `numeric` column, read into an amount.
+ *
+ * Null stays null, because a column that holds no amount is not an amount of
+ * zero -- a product with no minimum has no floor, and reading that as a floor of
+ * nothing happens to be the same thing but only by accident.
+ *
+ * A value that is present and unreadable THROWS, and the direction matters. The
+ * two hand-rolled conversions this replaces both returned null there, which for
+ * `loan_product.min_amount` means "this product has no minimum" -- so a
+ * malformed figure silently REMOVED a lending floor and widened who qualified.
+ * That is failing open, on a credit criterion, without anything being logged.
+ * The caller now has to decide, and both of them drop the product, which is
+ * what they already do when its criteria will not parse.
+ */
+export function readNumericMoney(value: unknown): Money | null {
+  if (value === null || value === undefined) {
+    return null;
   }
-});
+  const parsed = MoneyFromNumericSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new RangeError(
+      'Expected a numeric amount as PostgREST renders one; received ' + JSON.stringify(value),
+    );
+  }
+  return parsed.data;
+}

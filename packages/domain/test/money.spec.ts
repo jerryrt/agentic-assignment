@@ -14,6 +14,7 @@ import {
   isMoney,
   moneyFromMinorUnits,
   moneyFromNumericString,
+  readNumericMoney,
   moneyToNumericString,
   negateMoney,
   subtractMoney,
@@ -187,9 +188,14 @@ describe('the schemas', () => {
   // PostgREST renders `numeric` as a JSON string precisely so that no client
   // has to route the value through a float. Accepting a JSON number here would
   // undo that at the trust boundary, where it is least visible.
-  it('refuses a JSON number, because a number has already lost the decimal', () => {
-    expect(MoneyFromNumericSchema.safeParse(1234).success).toBe(false);
-    expect(MoneyFromNumericSchema.safeParse(1234.56).success).toBe(false);
+  // This test used to assert the opposite, and its name carried the reason:
+  // "because a number has already lost the decimal". A number has NOT lost the
+  // decimal -- 1234.56 round-trips through a double exactly, and so does every
+  // value numeric(14,2) can hold. The belief was wrong, the schema built on it
+  // would have refused every real row, and this test was defending it (#57).
+  it('accepts a JSON number, which is what a plain select actually sends', () => {
+    expect(MoneyFromNumericSchema.parse(1234)).toBe(123_400);
+    expect(MoneyFromNumericSchema.parse(1234.56)).toBe(123_456);
   });
 
   it('reports the offending value in the issue rather than throwing out of the parse', () => {
@@ -197,6 +203,109 @@ describe('the schemas', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues[0]?.message).toContain('1234.567');
+    }
+  });
+});
+
+/**
+ * What actually crosses the wire from PostgREST.
+ *
+ * The header of money.ts asserted for three phases that PostgREST renders a
+ * `numeric` column as a JSON string. It does not -- it renders a JSON number,
+ * and `MoneyFromNumericSchema` being a `z.string()` meant it would have refused
+ * every real row it was pointed at. It went unnoticed because the only column it
+ * was ever applied to is null in every fixture (issue #57).
+ *
+ * Both spellings are now in the codebase: the plain select gives a number, and
+ * `select=column::text` gives a string. The schema takes either, because a
+ * boundary that accepts only one of them gets worked around locally -- which is
+ * exactly what happened, twice.
+ */
+describe('MoneyFromNumericSchema, against what PostgREST really sends', () => {
+  it('accepts a numeric column as a plain select renders it -- a JSON number', () => {
+    expect(MoneyFromNumericSchema.parse(25000.0)).toBe(2_500_000);
+    expect(MoneyFromNumericSchema.parse(128442.47)).toBe(12_844_247);
+  });
+
+  it('accepts a numeric column cast with ::text -- a JSON string', () => {
+    expect(MoneyFromNumericSchema.parse('25000.00')).toBe(2_500_000);
+    expect(MoneyFromNumericSchema.parse('128442.47')).toBe(12_844_247);
+  });
+
+  // The reason the module exists. A number arriving as a double is rendered
+  // back to its shortest round-tripping decimal before any arithmetic, so the
+  // cent that `Math.trunc(value * 100)` loses is never lost here.
+  it('is exact for the values a float multiplication rounds wrongly', () => {
+    expect(MoneyFromNumericSchema.parse(0.29)).toBe(29);
+    expect(MoneyFromNumericSchema.parse(1.15)).toBe(115);
+    expect(MoneyFromNumericSchema.parse('0.29')).toBe(29);
+    expect(MoneyFromNumericSchema.parse('1.15')).toBe(115);
+  });
+
+  it('accepts a whole number of dollars in either spelling', () => {
+    expect(MoneyFromNumericSchema.parse(25000)).toBe(2_500_000);
+    expect(MoneyFromNumericSchema.parse('25000')).toBe(2_500_000);
+  });
+
+  it('reads a negative amount, which a ledger of repayments needs', () => {
+    expect(MoneyFromNumericSchema.parse(-1500.5)).toBe(-150_050);
+    expect(MoneyFromNumericSchema.parse('-1500.50')).toBe(-150_050);
+  });
+
+  it('refuses what is neither, rather than coercing it', () => {
+    for (const value of [null, undefined, true, {}, [], 'not a number', '1,500.00']) {
+      expect(MoneyFromNumericSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  // The widest value the column can hold, both ways. This was asserted the
+  // other way round first -- that a number that wide could not have survived
+  // the wire -- and measuring it showed the opposite: 999999999999.99 is
+  // fourteen significant digits and a double round-trips fifteen to seventeen,
+  // so EVERY value numeric(14,2) can hold arrives intact. Refusing it would
+  // have been an arbitrary limit dressed up as a safety property.
+  it('reads the widest amount the column can hold, as a number and as text', () => {
+    expect(MoneyFromNumericSchema.parse(999_999_999_999.99)).toBe(99_999_999_999_999);
+    expect(MoneyFromNumericSchema.parse('999999999999.99')).toBe(99_999_999_999_999);
+  });
+
+  // What genuinely cannot be read is a value with more precision than the
+  // column has. It is refused rather than rounded, because rounding money at a
+  // trust boundary is how fractions of a cent go missing.
+  it('refuses more precision than the column carries', () => {
+    expect(MoneyFromNumericSchema.safeParse(1.005).success).toBe(false);
+    expect(MoneyFromNumericSchema.safeParse('1.005').success).toBe(false);
+  });
+
+  it('refuses a number that is not one', () => {
+    expect(MoneyFromNumericSchema.safeParse(Number.NaN).success).toBe(false);
+    expect(MoneyFromNumericSchema.safeParse(Number.POSITIVE_INFINITY).success).toBe(false);
+  });
+});
+
+describe('readNumericMoney', () => {
+  it('reads either spelling of a column that holds an amount', () => {
+    expect(readNumericMoney(25000.0)).toBe(2_500_000);
+    expect(readNumericMoney('25000.00')).toBe(2_500_000);
+  });
+
+  // A column holding no amount is not an amount of zero. A product with no
+  // minimum has no floor; reading that as a floor of nothing is the same thing
+  // only by accident, and the accident stops being harmless the moment a
+  // caller compares against it.
+  it('keeps an absent amount absent', () => {
+    expect(readNumericMoney(null)).toBeNull();
+    expect(readNumericMoney(undefined)).toBeNull();
+  });
+
+  // The direction that matters. Both conversions this replaces returned null
+  // here, which for loan_product.min_amount reads as "no minimum" -- so a
+  // malformed figure silently removed a lending floor and widened who
+  // qualified, with nothing logged. Failing open on a credit criterion is the
+  // one outcome worth a throw.
+  it('refuses a present value it cannot read, rather than reporting no amount', () => {
+    for (const value of ['not a number', '1,500.00', {}, true, Number.NaN, 1.005]) {
+      expect(() => readNumericMoney(value)).toThrow();
     }
   });
 });
