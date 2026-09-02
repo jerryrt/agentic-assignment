@@ -158,7 +158,16 @@ async function adjudicate(request: Request): Promise<Response> {
 
   // 4 -- the decision. Guards run in TypeScript because they need context, and
   // the context is evaluated rule sets that packages/rules produced just now.
-  const evaluation = await evaluateApplication(service, subject);
+  const evaluated = await evaluateApplication(service, subject);
+  if (!evaluated.ok) {
+    // The stored payload matches no schema, so no rule set could be evaluated
+    // over it. 422 with no blockers: there is no criterion to show, and the
+    // alternative -- an empty context -- would render as four unanswered steps
+    // and tell the applicant their form is unfinished when their row is
+    // corrupt.
+    return failure(422, 'guard_refused', evaluated.reason, { blockers: [], current });
+  }
+  const evaluation = evaluated.evaluation;
   const outcome = apply(
     applicationMachine,
     subject.state,

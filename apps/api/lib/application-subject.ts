@@ -20,6 +20,7 @@ import {
 import {
   ApplicationBorrowerViewSchema,
   moneyFromNumericString,
+  parseApplicationData,
   type ApplicationState,
   type JsonValue,
   type Money,
@@ -27,6 +28,8 @@ import {
 } from '@lj/domain';
 import {
   atLeastOneEligibleProduct,
+  eligibilityContextFromApplication,
+  evaluateApplicationCompleteness,
   evaluateEligibility,
   parseEligibilityCriteria,
   type EligibilityProduct,
@@ -38,7 +41,6 @@ import {
   type ApplicationGuardContext,
 } from '@lj/workflow';
 
-import { eligibilityContextFrom } from './application-data.ts';
 import type { Actor } from './actor.ts';
 import type { SubjectSnapshot } from './http.ts';
 
@@ -195,37 +197,70 @@ export interface ApplicationEvaluation {
  * evaluated and blocks, because reading "no criteria" as "no objections" would
  * let a forgotten evaluation open a transition.
  *
- * Two of the three are empty today, and both are waiting on work this scope
- * does not own:
+ * One of the three is still empty, and it is waiting on work this scope does
+ * not own:
  *
- *   completeness  Whether the multi-step form is finished. The form and its
- *                 payload schema are Phase 5 (`feature-apply`); packages/rules
- *                 has no rule set for it and packages/domain has no
- *                 ApplicationDataSchema to write one against. Inventing one
- *                 here would put a business rule in the delivery layer and
- *                 create the second definition that Phase 5 would then have to
- *                 disagree with.
  *   documentPack  Whether every required document is accepted and current.
  *                 packages/rules HAS this rule set -- evaluateCompleteness --
  *                 but `document_slot` has no table (Phase 6), so there are no
  *                 slots to evaluate.
  *
- * The consequence is visible and correct: `submit` and `begin_review` refuse
- * with 422 and say the criteria have not been evaluated. Wiring each bucket is
- * one call in this function once its producer exists.
+ * The consequence is visible and correct: `begin_review` refuses with 422 and
+ * says the criteria have not been evaluated. Wiring that bucket is one call in
+ * this function once its producer exists.
+ *
+ * A PAYLOAD THAT DOES NOT PARSE REFUSES, and says so. It must not fall back to
+ * an empty context: that reads to the applicant as four unanswered steps, when
+ * the truth is a row nothing can describe. The two are different problems with
+ * different remedies, and only one of them is the applicant's to fix. Refusing
+ * is also the direction everything else here fails -- an unevaluated rule set,
+ * an effect with no runner -- and it costs a corrupt application every
+ * transition rather than only the guarded ones, because the context is built
+ * before the machine is consulted. That is deliberate: `data` is written by the
+ * borrower's own autosave and by nothing else, so the row that refuses to move
+ * is repaired by the same path that broke it.
  */
+export type ApplicationEvaluationResult =
+  | { readonly ok: true; readonly evaluation: ApplicationEvaluation }
+  | { readonly ok: false; readonly reason: string };
+
 export async function evaluateApplication(
   client: DatabaseClient,
   subject: ApplicationSubject,
-): Promise<ApplicationEvaluation> {
+): Promise<ApplicationEvaluationResult> {
+  const parsed = parseApplicationData(subject.data);
+  if (!parsed.ok) {
+    // The problems name paths inside the stored payload, not anything the
+    // caller sent, so quoting them is a diagnosis rather than an echo of
+    // untrusted input. Capped, because a wholly wrong shape produces one issue
+    // per leaf and a response body is not a log.
+    return {
+      ok: false,
+      reason:
+        'the stored application data does not match the schema that describes it, so its ' +
+        'criteria could not be evaluated: ' +
+        parsed.problems.slice(0, 3).join('; '),
+    };
+  }
+
   const products = eligibilityProducts(await listActiveLoanProducts(client, subject.orgId));
-  const evaluated = evaluateEligibility(products, eligibilityContextFrom(subject.data));
+  const evaluated = evaluateEligibility(
+    products,
+    eligibilityContextFromApplication(parsed.data),
+  );
   const eligibility: readonly RuleResult[] =
     products.length === 0 ? [] : [atLeastOneEligibleProduct(evaluated)];
 
   return {
-    context: { completeness: [], eligibility, documentPack: [] },
-    eligibility: evaluated,
+    ok: true,
+    evaluation: {
+      context: {
+        completeness: evaluateApplicationCompleteness(parsed.data),
+        eligibility,
+        documentPack: [],
+      },
+      eligibility: evaluated,
+    },
   };
 }
 
