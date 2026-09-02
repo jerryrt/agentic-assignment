@@ -106,6 +106,23 @@ export const routes: Routes = [
     loadChildren: () => import('./features/apply/apply.routes.ts').then((m) => m.APPLY_ROUTES),
   },
 
+  /**
+   * Option 3's borrower screens: the loans, one loan, and one credit request.
+   *
+   * `/loans/:id/release/:rid` carries the request id in the URL because the URL
+   * is the position (plan/03 section 4): the row is created while it is still
+   * being composed, the address bar is replaced with its id, and a refresh from
+   * that moment re-reads rather than restoring. `new` is a value of `:rid`
+   * rather than a route of its own, so the component -- and the half-typed form
+   * in it -- survives that replacement.
+   */
+  {
+    path: 'loans',
+    canActivate: [authGuard],
+    loadChildren: () =>
+      import('./features/servicing/servicing.routes.ts').then((m) => m.SERVICING_ROUTES),
+  },
+
   {
     path: '**',
     title: 'Page not found',

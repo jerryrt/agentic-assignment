@@ -37,6 +37,7 @@ interface NavigationItem {
 const NAVIGATION: readonly NavigationItem[] = [
   { label: 'Dashboard', path: '/', audience: 'borrower' },
   { label: 'Applications', path: '/apply', audience: 'borrower' },
+  { label: 'Loans', path: '/loans', audience: 'borrower' },
   { label: 'Lending desk', path: '/lender', audience: 'lender' },
 ];
 

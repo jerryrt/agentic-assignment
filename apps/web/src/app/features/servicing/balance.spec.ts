@@ -8,6 +8,7 @@ import {
 import { evaluateCreditRelease } from '@lj/rules';
 
 import {
+  availableFromBalance,
   borrowerFigures,
   creditReleaseContextFor,
   lenderFigures,
@@ -138,6 +139,16 @@ describe('the borrower figure and the guard', () => {
 
     expect(borrowerFigures(overdrawn).available).toBe(0);
     expect(lenderFigures(overdrawn).undrawn).toBe(moneyFromNumericString('-10000.00'));
+  });
+
+  /**
+   * The loans list has every balance and no release lists, so it reads the
+   * view's column directly. This is the assertion that lets it: the two paths
+   * to the borrower's figure are one number.
+   */
+  it('reads the same figure from the balance row alone', () => {
+    expect(availableFromBalance(balance())).toBe(borrowerFigures(facts()).available);
+    expect(availableFromBalance(balance({ available: '-10000.00' }))).toBe(0);
   });
 
   it('carries the loan status into the context the guard reads', () => {

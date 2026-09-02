@@ -1,4 +1,5 @@
 import {
+  ZERO_MONEY,
   lenderUndrawnLimit,
   type CreditRelease,
   type LoanBalance,
@@ -121,4 +122,21 @@ export function lenderFigures(facts: LoanFacts): LenderFigures {
     atRisk: facts.balance.pending,
     undrawn: lenderUndrawnLimit(facts.balance),
   };
+}
+
+/**
+ * The borrower's figure where there is no release list to hand -- the loans
+ * list, which reads every balance in one round trip rather than one file per
+ * card.
+ *
+ * `loan_balance_v.available` and `availableCredit` are the same quantity by
+ * construction: the view sums the same three pending states @lj/domain names,
+ * and the spec beside this file asserts the two agree on the seeded row. What
+ * is restated here is only the floor, because the view reports a negative
+ * available on an over-drawn loan and the rules do not -- and a card that said
+ * "-$10,000.00 available" would be read by somebody as an amount they can ask
+ * for.
+ */
+export function availableFromBalance(balance: LoanBalance): Money {
+  return balance.available < 0 ? ZERO_MONEY : balance.available;
 }
