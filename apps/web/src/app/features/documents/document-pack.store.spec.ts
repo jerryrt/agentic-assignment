@@ -5,7 +5,12 @@ import type { AppRole } from '@lj/domain';
 import { SupabaseAuthService } from '../../core/auth/auth.service.ts';
 import { DATABASE_CLIENT } from '../../core/data/database-client.ts';
 import { TransitionService } from '../../core/workflow/transition.service.ts';
-import { DOCUMENT_TODAY, DocumentPackStore, NO_DATABASE } from './document-pack.store.ts';
+import {
+  DOCUMENT_TODAY,
+  DocumentPackStore,
+  NO_DATABASE,
+  NOTHING_TO_CORRECT,
+} from './document-pack.store.ts';
 import { DOCUMENT_INTAKE, INTAKE_NOT_WIRED, UnwiredDocumentIntake } from './intake.ts';
 
 const { getApplicationForAudience, listDocumentSlots, listDocumentUploadsForApplication } =
@@ -469,9 +474,28 @@ describe('typing a value in', () => {
     expect(correct).toHaveBeenCalledWith({
       applicationId: APPLICATION,
       slotId: SLOT_A,
+      // The newest upload on the slot, which is the one the panel was showing.
+      // The API refuses a correction against any other: document_upload is
+      // append-only, so a correction appends to the head of the list, and that
+      // is only safe if the head is the one that was read.
+      uploadId: '00000000-0000-4000-8000-0000000000f1',
       field: 'net_income',
       value: '184200',
     });
+  });
+
+  // A panel offered on a slot with nothing uploaded is a screen ahead of
+  // itself. It says what is missing rather than failing at the API with a
+  // foreign key nobody can read.
+  it('refuses a correction on a document that has not been uploaded', async () => {
+    listDocumentUploadsForApplication.mockResolvedValue([]);
+    const { store, correct } = build({ intakeWorks: true });
+    await store.open(APPLICATION);
+
+    await store.correct(SLOT_A, 'net_income', '184200');
+
+    expect(correct).not.toHaveBeenCalled();
+    expect(store.refusal()).toBe(NOTHING_TO_CORRECT);
   });
 
   /**

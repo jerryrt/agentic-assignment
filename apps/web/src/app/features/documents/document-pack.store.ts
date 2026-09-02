@@ -69,6 +69,14 @@ export const NO_DATABASE: string =
 export const UNKNOWN_SLOT: string = 'That document is not part of this application.';
 
 /**
+ * A correction needs something to correct. Reached when a slot has no upload
+ * yet, which is a screen offering a panel it should not have -- so it says what
+ * is missing rather than failing at the API with a foreign key.
+ */
+export const NOTHING_TO_CORRECT: string =
+  'There is nothing to correct on that document yet -- upload it first.';
+
+/**
  * Today, as an ISO calendar date, injected.
  *
  * `isExpired` compares calendar dates as strings and @lj/rules takes the clock
@@ -263,10 +271,22 @@ export class DocumentPackStore extends AggregateStore<DocumentPackValue> {
       return;
     }
 
+    // The newest upload on this slot, which is the one the panel was showing.
+    // The API refuses a correction against any other, because appending to the
+    // head of an append-only list is only safe if the head is the one that was
+    // read -- somebody replacing the document while this panel was open is
+    // precisely the case that catches.
+    const latest = held.uploads.find((upload) => upload.slot_id === slot.id);
+    if (latest === undefined) {
+      this.refused.set(NOTHING_TO_CORRECT);
+      return;
+    }
+
     const outcome = await this.write(() =>
       this.intake.correct({
         applicationId: held.applicationId,
         slotId: slot.id,
+        uploadId: latest.id,
         field,
         value,
       }),

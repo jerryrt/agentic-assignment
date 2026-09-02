@@ -49,6 +49,15 @@ export interface UploadRequest {
 export interface CorrectionRequest {
   readonly applicationId: string;
   readonly slotId: string;
+  /**
+   * The upload this correction is against, which must be the NEWEST on the
+   * slot. `document_upload` is append-only, so a correction appends a row
+   * carrying the previous extraction with one field replaced, and appending to
+   * the head of a list is only safe if the head is the one that was read.
+   * Somebody replacing the document while a correction panel was open is
+   * exactly what the API refuses on this field.
+   */
+  readonly uploadId: string;
   readonly field: string;
   /** As typed. The API parses it; a browser is not the trust boundary. */
   readonly value: string;

@@ -2,6 +2,8 @@ import type { Routes } from '@angular/router';
 
 import { roleGuard } from '../../core/auth/auth.guards.ts';
 import { DocumentPackStore } from './document-pack.store.ts';
+import { HttpDocumentIntake } from './http-intake.ts';
+import { DOCUMENT_INTAKE } from './intake.ts';
 
 /**
  * `/apply/:id/documents` -- Option 1's screens.
@@ -24,7 +26,14 @@ import { DocumentPackStore } from './document-pack.store.ts';
 export const DOCUMENTS_ROUTES: Routes = [
   {
     path: '',
-    providers: [DocumentPackStore],
+    providers: [
+      DocumentPackStore,
+      // The real intake replaces the refusing stub in ./intake.ts. Provided
+      // here rather than at the root so a test can supply its own by
+      // overriding one route's providers, which is the reason the seam is a
+      // token rather than a direct import.
+      { provide: DOCUMENT_INTAKE, useClass: HttpDocumentIntake },
+    ],
     children: [
       {
         path: '',

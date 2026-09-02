@@ -64,6 +64,7 @@ describe('the seam with nothing behind it', () => {
       new UnwiredDocumentIntake().correct({
         applicationId: 'a',
         slotId: 'b',
+        uploadId: 'upload-1',
         field: 'net_income',
         value: '184200',
       }),
