@@ -84,29 +84,6 @@ a {
   padding: 24px;
 }
 
-.lj-field {
-  display: block;
-  margin-bottom: 16px;
-}
-
-.lj-field > span {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--lj-muted);
-}
-
-.lj-field input {
-  width: 100%;
-  padding: 9px 11px;
-  border: 1px solid var(--lj-border-strong);
-  border-radius: 6px;
-  background: var(--lj-bg);
-  color: var(--lj-text);
-  font: inherit;
-}
-
 .lj-button {
   display: inline-flex;
   align-items: center;
