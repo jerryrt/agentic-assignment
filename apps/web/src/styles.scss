@@ -1,1 +1,166 @@
-/* You can add global styles to this file, and also import other style files */
+/*
+ * The application's global stylesheet.
+ *
+ * One import and one job: bring in the generated colour contract, then apply it
+ * to the document and to the handful of primitives that would otherwise be
+ * copied into every component's `styles` block.
+ *
+ * `_tokens.css` is GENERATED from design/tokens.json by packages/ui and guarded
+ * by `pnpm tokens:check` (design/02-implementation.md). Nothing below may
+ * hardcode a colour: every one is a `--lj-*` variable, so light and dark are
+ * already handled -- the tokens carry both schemes, which is why there is no
+ * `dark:` variant to remember anywhere.
+ *
+ * NOT YET WIRED, and deliberately not invented here: design/02-implementation.md
+ * also specifies Tailwind v4 for layout and Angular Material 3 for input
+ * primitives. Neither is installed (see the dependency note in the issue #19
+ * handoff). Adding either is a manifest change with a workspace-wide version
+ * decision behind it, which belongs to the platform scope, not to this one. The
+ * classes below are the minimum needed to make the shell and the auth screens
+ * legible; they are a placeholder for Tailwind's layout utilities, not a rival
+ * design system, and they must not grow into one.
+ */
+
+@use '@lj/ui/tokens/_tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--lj-bg);
+  color: var(--lj-text);
+  font-family:
+    'Inter',
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--lj-primary);
+}
+
+/* The a11y floor from design/00-foundations.md: a focus ring that is visible on
+   every one of bg, surface and raised, and never removed. */
+:focus-visible {
+  outline: 2px solid var(--lj-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.lj-page {
+  margin: 0 auto;
+  max-width: 960px;
+  padding: 32px 20px 64px;
+}
+
+.lj-card {
+  background: var(--lj-raised);
+  border: 1px solid var(--lj-border);
+  border-radius: 10px;
+  padding: 24px;
+}
+
+.lj-field {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.lj-field > span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lj-muted);
+}
+
+.lj-field input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--lj-border-strong);
+  border-radius: 6px;
+  background: var(--lj-bg);
+  color: var(--lj-text);
+  font: inherit;
+}
+
+.lj-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border: 1px solid var(--lj-primary);
+  border-radius: 6px;
+  background: var(--lj-primary);
+  color: var(--lj-on-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lj-button:hover:not(:disabled) {
+  background: var(--lj-primary-hover);
+  border-color: var(--lj-primary-hover);
+}
+
+.lj-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.lj-button--quiet {
+  background: transparent;
+  color: var(--lj-primary);
+}
+
+.lj-button--quiet:hover:not(:disabled) {
+  background: var(--lj-primary-subtle);
+  border-color: var(--lj-primary);
+  color: var(--lj-primary);
+}
+
+/* Status surfaces. Colour is never the only cue: each carries a border and a
+   word, so the message survives greyscale (design/00-foundations.md). */
+.lj-notice {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--lj-border-strong);
+  border-radius: 6px;
+  background: var(--lj-surface);
+  font-size: 14px;
+}
+
+.lj-notice--error {
+  border-color: var(--lj-err);
+  background: var(--lj-err-subtle);
+  color: var(--lj-err);
+}
+
+.lj-notice--warn {
+  border-color: var(--lj-warn);
+  background: var(--lj-warn-subtle);
+  color: var(--lj-warn);
+}
