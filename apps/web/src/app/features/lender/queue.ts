@@ -68,6 +68,12 @@ export interface QueueRow {
   readonly amount: Money;
   readonly purpose: string;
   readonly state: CreditReleaseState;
+  /**
+   * The revision as read, which is what makes a decision taken FROM THE QUEUE
+   * safe: two lenders acting on one row serialise, because the second one's
+   * write matches nothing and comes back as a conflict to refetch.
+   */
+  readonly revision: number;
   readonly createdAt: string;
   readonly waitingDays: number;
   readonly sla: SlaBand;
@@ -131,6 +137,7 @@ export function queueRows(source: QueueSource): readonly QueueRow[] {
       amount: release.amount,
       purpose: release.purpose,
       state: release.state,
+      revision: release.revision,
       createdAt: release.created_at,
       waitingDays: days,
       sla: slaBandFor(days),

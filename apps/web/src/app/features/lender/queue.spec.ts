@@ -174,6 +174,10 @@ describe('what a row carries', () => {
     expect(row?.atRisk).toBe(moneyFromNumericString('30000.00'));
   });
 
+  it('carries the revision it read, so a decision from the queue can be guarded', () => {
+    expect(queueRows(source([release({ revision: 2 })]))[0]?.revision).toBe(2);
+  });
+
   it('carries the application, so the row can reach the document review', () => {
     expect(queueRows(source([release()]))[0]?.applicationId).toBe(APPLICATION);
   });
