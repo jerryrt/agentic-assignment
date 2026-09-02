@@ -296,6 +296,41 @@ describe('the two truths over one balance row', () => {
     expect(borrowerAvailableCredit(balance)).toBe(9_155_753);
   });
 
+  // The half this function claimed and did not have. `available` is signed and
+  // goes negative on an over-drawn loan, while the submit guard in @lj/rules
+  // floors the same quantity at zero -- so the screen would have shown
+  // "-$5,000.00 available to draw" against a guard treating the headroom as
+  // nothing, and the shortfall in a refusal would have been computed from a
+  // different base than the figure beside it (issue #62).
+  //
+  // Zero is also the honest answer to "what may I draw": a borrower cannot draw
+  // a negative amount. The signed figure stays on the row for a surface that
+  // wants to say "you are over your limit by X", which is a different sentence.
+  it('floors at nothing when the loan is over-drawn, as the guard does', () => {
+    const overdrawn = LoanBalanceSchema.parse({
+      ...BALANCE,
+      outstanding: '260000.00',
+      pending: '0.00',
+      available: '-10000.00',
+    });
+
+    expect(overdrawn.available).toBe(-1_000_000);
+    expect(borrowerAvailableCredit(overdrawn)).toBe(0);
+  });
+
+  // The lender's reading is NOT floored. Their number is exposure, and an
+  // exposure past the limit is exactly what a lender needs to see.
+  it('does not floor the lender reading, which is exposure and may exceed the limit', () => {
+    const overdrawn = LoanBalanceSchema.parse({
+      ...BALANCE,
+      outstanding: '260000.00',
+      pending: '0.00',
+      available: '-10000.00',
+    });
+
+    expect(lenderUndrawnLimit(overdrawn)).toBe(-1_000_000);
+  });
+
   it('gives the lender undrawn limit, with pending carried separately', () => {
     expect(lenderUndrawnLimit(balance)).toBe(12_155_753);
     expect(lenderUndrawnLimit(balance)).toBe(

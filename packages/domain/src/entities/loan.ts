@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { MoneyFromNumericSchema, subtractMoney } from '../money.ts';
+import { MoneyFromNumericSchema, ZERO_MONEY, subtractMoney } from '../money.ts';
 import type { Money } from '../money.ts';
 import {
   BigSerialIdSchema,
@@ -252,15 +252,28 @@ export type LoanBalance = z.infer<typeof LoanBalanceSchema>;
  * The borrower's truth, and the submit guard's.
  *
  * It is net of pending because a borrower must not be able to spend the same
- * credit twice, and `amountWithinAvailable` compares against this exact
- * quantity. The function exists rather than a field access at each call site so
- * that "the number on the screen" and "the number in the guard" are one named
- * thing: if they ever differed, a borrower could submit a request the screen
- * had just told them was affordable, and that is the bug Option 3 exists to
- * avoid.
+ * credit twice, and the submit guard compares against this exact quantity. The
+ * function exists rather than a field access at each call site so that "the
+ * number on the screen" and "the number in the guard" are one named thing: if
+ * they ever differed, a borrower could submit a request the screen had just
+ * told them was affordable, and that is the bug Option 3 exists to avoid.
+ *
+ * It briefly returned `available` unchanged, which broke that claim in the one
+ * case it mattered. `available` is signed and goes negative on an over-drawn
+ * loan, while `availableCredit` in packages/rules floors the same quantity at
+ * zero -- so the screen would have read "-$5,000.00 available to draw" against
+ * a guard treating the headroom as nothing, and a refusal's shortfall would
+ * have been measured from a different base than the figure printed beside it.
+ * No seeded loan is over-drawn, which is the only reason it survived review
+ * (issue #62).
+ *
+ * Zero is independently the honest answer to "what may I draw": a borrower
+ * cannot draw a negative amount. The signed figure remains on the row for a
+ * surface that wants to say "you are over your limit by X" -- a different
+ * sentence, which should look like one.
  */
 export function borrowerAvailableCredit(balance: LoanBalance): Money {
-  return balance.available;
+  return balance.available < 0 ? ZERO_MONEY : balance.available;
 }
 
 /**
