@@ -1,6 +1,6 @@
 import { type RuleSeverity, ruleFailed, rulePassed, ruleUnknown } from '@lj/domain';
 
-import { joinWords } from './figures.js';
+import { joinWords } from './figures.ts';
 import {
   type AgreementSource,
   type Reading,
@@ -8,8 +8,8 @@ import {
   combineMissing,
   missingFields,
   missingLabels,
-} from './reading.js';
-import type { Rule } from './rule.js';
+} from './reading.ts';
+import type { Rule } from './rule.ts';
 
 /**
  * The comparators for values that are not quantities.

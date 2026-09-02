@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RuleResultSchema, ruleFailed, rulePassed, ruleUnknown, type RuleResult } from '@lj/domain';
 
-import { evaluate, requireAll, type Rule } from '../src/index.js';
+import { evaluate, requireAll, type Rule } from '../src/index.ts';
 
 /** A rule that ignores its context: enough to exercise the evaluator itself. */
 function constantRule(result: RuleResult): Rule<null> {

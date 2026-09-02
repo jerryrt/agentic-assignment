@@ -10,7 +10,7 @@ import {
   type DocumentContext,
   type DocumentSlotView,
   type ExtractedField,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const TODAY = '2026-09-01';
 

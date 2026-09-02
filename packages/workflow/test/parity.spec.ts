@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { WorkflowTransitionSchema } from '@lj/domain';
 
-import { allTransitionRows, parseTransitionsSql } from '../src/index.js';
+import { allTransitionRows, parseTransitionsSql } from '../src/index.ts';
 
 /**
  * Belt and braces, checked against each other.

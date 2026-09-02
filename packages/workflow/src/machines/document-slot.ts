@@ -1,8 +1,8 @@
 import { DOCUMENT_SLOT_STATES } from '@lj/domain';
 import type { DocumentSlotState } from '@lj/domain';
 
-import type { DocumentSlotGuardContext } from '../context.js';
-import { defineMachine } from '../engine.js';
+import type { DocumentSlotGuardContext } from '../context.ts';
+import { defineMachine } from '../engine.ts';
 
 /**
  * One machine per required document, not per uploaded file.

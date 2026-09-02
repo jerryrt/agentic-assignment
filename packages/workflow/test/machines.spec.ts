@@ -9,17 +9,17 @@ import {
 } from '@lj/domain';
 import type { AppRole } from '@lj/domain';
 
-import { apply, can } from '../src/index.js';
+import { apply, can } from '../src/index.ts';
 import {
   applicationMachine,
   creditReleaseMachine,
   documentSlotMachine,
-} from '../src/index.js';
+} from '../src/index.ts';
 import type {
   ApplicationGuardContext,
   CreditReleaseGuardContext,
   DocumentSlotGuardContext,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 /**
  * The legal set, written out by hand from the state diagrams in

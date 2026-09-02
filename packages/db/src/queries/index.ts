@@ -9,10 +9,10 @@
  * section 8).
  */
 
-export * from './application-decisions.js';
-export * from './applications.js';
-export * from './loan-products.js';
-export * from './organisations.js';
-export * from './profiles.js';
-export * from './workflow-events.js';
-export * from './workflow-transitions.js';
+export * from './application-decisions.ts';
+export * from './applications.ts';
+export * from './loan-products.ts';
+export * from './organisations.ts';
+export * from './profiles.ts';
+export * from './workflow-events.ts';
+export * from './workflow-transitions.ts';

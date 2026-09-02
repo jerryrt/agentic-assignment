@@ -7,13 +7,13 @@ import {
   TERMINAL_APPLICATION_STATES,
 } from '@lj/domain';
 
-import { reachableStates, terminalStates } from '../src/index.js';
-import { ALL_MACHINES } from '../src/index.js';
+import { reachableStates, terminalStates } from '../src/index.ts';
+import { ALL_MACHINES } from '../src/index.ts';
 import {
   applicationMachine,
   creditReleaseMachine,
   documentSlotMachine,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 /**
  * The orphan-state test.

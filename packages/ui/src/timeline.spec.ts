@@ -7,7 +7,7 @@ import {
   formatWorkflowTimestamp,
   workflowEventActorLabel,
   workflowEventStateLabel,
-} from './timeline.js';
+} from './timeline.ts';
 
 @Component({
   selector: 'lj-timeline-host',

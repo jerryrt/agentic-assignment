@@ -1,7 +1,7 @@
 import { blockingRuleResults, unresolvedRuleResults, overallRuleStatus } from '@lj/domain';
 import type { RuleResult } from '@lj/domain';
 
-import type { GuardRefusal, GuardResult } from './types.js';
+import type { GuardRefusal, GuardResult } from './types.ts';
 
 /**
  * Guard composition.

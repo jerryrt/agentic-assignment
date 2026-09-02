@@ -11,7 +11,7 @@ import {
   numericWithinBand,
   readNumber,
   type Reading,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 /** The context these comparators read is just the reading under test. */
 type Ctx = Reading<number>;

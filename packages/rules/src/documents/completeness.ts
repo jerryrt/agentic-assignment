@@ -1,7 +1,7 @@
 import { type RuleResult, ratioBasisPoints, ruleFailed, rulePassed, ruleUnknown, moneyFromMinorUnits } from '@lj/domain';
 
-import { joinWords } from '../engine/figures.js';
-import { type Rule, type RuleDecision, decide, evaluate } from '../engine/rule.js';
+import { joinWords } from '../engine/figures.ts';
+import { type Rule, type RuleDecision, decide, evaluate } from '../engine/rule.ts';
 import {
   type DocumentContext,
   type DocumentSlotView,
@@ -9,7 +9,7 @@ import {
   humaniseFieldName,
   isExpired,
   isReadable,
-} from './context.js';
+} from './context.ts';
 
 /**
  * "Complete", defined in code rather than in prose (plan 04).

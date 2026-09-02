@@ -1,6 +1,6 @@
 import { type RuleSeverity, ruleFailed, rulePassed, ruleUnknown } from '@lj/domain';
 
-import { type RuleFigureKind, figureDelta, formatFigure, joinWords } from './figures.js';
+import { type RuleFigureKind, figureDelta, formatFigure, joinWords } from './figures.ts';
 import {
   type Reading,
   combineInputs,
@@ -8,8 +8,8 @@ import {
   known,
   missingFields,
   missingLabels,
-} from './reading.js';
-import type { Rule } from './rule.js';
+} from './reading.ts';
+import type { Rule } from './rule.ts';
 
 /**
  * The numeric comparators: at least, at most, and the band that is both.

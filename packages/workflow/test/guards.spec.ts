@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { countDelta, ruleFailed, rulePassed, ruleUnknown } from '@lj/domain';
 import type { RuleResult } from '@lj/domain';
 
-import { can, requireAll, requireRules } from '../src/index.js';
-import { applicationMachine, creditReleaseMachine } from '../src/index.js';
-import type { ApplicationGuardContext, CreditReleaseGuardContext } from '../src/index.js';
+import { can, requireAll, requireRules } from '../src/index.ts';
+import { applicationMachine, creditReleaseMachine } from '../src/index.ts';
+import type { ApplicationGuardContext, CreditReleaseGuardContext } from '../src/index.ts';
 
 /**
  * Guards are pure and take everything they need in their context argument

@@ -4,7 +4,7 @@ import {
   loanToValueBasisPoints,
 } from '@lj/domain';
 
-import type { RuleFigureKind } from '../engine/figures.js';
+import type { RuleFigureKind } from '../engine/figures.ts';
 import {
   type Reading,
   awaiting,
@@ -12,8 +12,8 @@ import {
   missingInput,
   readNumber,
   readText,
-} from '../engine/reading.js';
-import type { EligibilityContext } from './context.js';
+} from '../engine/reading.ts';
+import type { EligibilityContext } from './context.ts';
 
 /**
  * The closed vocabulary a `loan_product.criteria` row may name.

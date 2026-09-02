@@ -11,7 +11,7 @@ import {
   oneOf,
   readText,
   type Reading,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 type Ctx = Reading<string>;
 

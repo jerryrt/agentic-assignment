@@ -1,9 +1,9 @@
 import { APPLICATION_STATES } from '@lj/domain';
 import type { ApplicationState } from '@lj/domain';
 
-import type { ApplicationGuardContext } from '../context.js';
-import { defineMachine } from '../engine.js';
-import { requireAll, requireRules } from '../guards.js';
+import type { ApplicationGuardContext } from '../context.ts';
+import { defineMachine } from '../engine.ts';
+import { requireAll, requireRules } from '../guards.ts';
 
 /**
  * Option 2 into Option 1 into funding: the application's life, as the state

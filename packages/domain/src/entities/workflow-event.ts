@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
-import { AppRoleSchema } from '../roles.js';
+import { AppRoleSchema } from '../roles.ts';
 import {
   BigSerialIdSchema,
   JsonValueSchema,
   NonEmptyTextSchema,
   TimestampSchema,
   UuidSchema,
-} from '../primitives.js';
-import { WorkflowMachineSchema } from '../states.js';
+} from '../primitives.ts';
+import { WorkflowMachineSchema } from '../states.ts';
 
 /**
  * The append-only log: audit trail, timeline component, and the explanation of

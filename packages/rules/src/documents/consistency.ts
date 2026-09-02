@@ -1,7 +1,7 @@
 import type { RuleResult } from '@lj/domain';
 
-import { type Tolerance, numericAgreement } from '../engine/agreement.js';
-import { exactAgreement } from '../engine/exact.js';
+import { type Tolerance, numericAgreement } from '../engine/agreement.ts';
+import { exactAgreement } from '../engine/exact.ts';
 import {
   type Reading,
   awaiting,
@@ -9,10 +9,10 @@ import {
   missingInput,
   readNumber,
   readText,
-} from '../engine/reading.js';
-import { type Rule, evaluate } from '../engine/rule.js';
-import { type DocumentSlotView, isReadable } from './context.js';
-import { normaliseEntityName } from './entity-name.js';
+} from '../engine/reading.ts';
+import { type Rule, evaluate } from '../engine/rule.ts';
+import { type DocumentSlotView, isReadable } from './context.ts';
+import { normaliseEntityName } from './entity-name.ts';
 
 /**
  * "Inconsistent", defined in code (plan 04).

@@ -1,9 +1,9 @@
 import { CREDIT_RELEASE_STATES } from '@lj/domain';
 import type { CreditReleaseState } from '@lj/domain';
 
-import type { CreditReleaseGuardContext } from '../context.js';
-import { defineMachine } from '../engine.js';
-import { requireRules } from '../guards.js';
+import type { CreditReleaseGuardContext } from '../context.ts';
+import { defineMachine } from '../engine.ts';
+import { requireRules } from '../guards.ts';
 
 /**
  * Option 3: a draw against an existing facility.

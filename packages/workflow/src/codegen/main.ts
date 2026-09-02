@@ -1,5 +1,5 @@
-import { allTransitionRows } from './rows.js';
-import { renderTransitionsSql } from './sql.js';
+import { allTransitionRows } from './rows.ts';
+import { renderTransitionsSql } from './sql.ts';
 
 /**
  * The generator's entry point. It writes the migration body to standard output

@@ -10,15 +10,15 @@
  * lint rules reject, so this list is the whole contract.
  */
 
-export * from './types.js';
-export * from './context.js';
-export * from './guards.js';
-export * from './engine.js';
-export * from './machines/index.js';
+export * from './types.ts';
+export * from './context.ts';
+export * from './guards.ts';
+export * from './engine.ts';
+export * from './machines/index.ts';
 
 /**
  * The code generator's pure half. Exported because the parity test compares its
  * output with the committed migration; nothing in the delivery layer needs it.
  */
-export * from './codegen/rows.js';
-export * from './codegen/sql.js';
+export * from './codegen/rows.ts';
+export * from './codegen/sql.ts';

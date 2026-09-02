@@ -17,7 +17,7 @@ import {
   WorkflowEventSchema,
   WorkflowTransitionSchema,
   isTerminalApplicationState,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const ORG_ID = '2f1c8b8e-7d6a-4c1b-9f3e-5a2d0b7c4e11';
 const BORROWER_ID = '0a9b8c7d-6e5f-4a3b-8c9d-1e2f3a4b5c6d';

@@ -18,8 +18,8 @@
  * this file is the whole TypeScript contract.
  */
 
-export * from './rule-presentation.js';
-export * from './rule-list.js';
-export * from './state-badge.js';
-export * from './timeline.js';
-export * from './money.js';
+export * from './rule-presentation.ts';
+export * from './rule-list.ts';
+export * from './state-badge.ts';
+export * from './timeline.ts';
+export * from './money.ts';

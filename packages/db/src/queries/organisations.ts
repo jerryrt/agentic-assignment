@@ -1,8 +1,8 @@
 /** Lending organisations.  The tenant boundary every lender policy is written against. */
 
-import type { DatabaseClient } from '../client.js';
-import type { Database } from '../database.types.js';
-import { unwrapMaybe } from '../errors.js';
+import type { DatabaseClient } from '../client.ts';
+import type { Database } from '../database.types.ts';
+import { unwrapMaybe } from '../errors.ts';
 
 export type Organisation = Database['public']['Tables']['organisation']['Row'];
 

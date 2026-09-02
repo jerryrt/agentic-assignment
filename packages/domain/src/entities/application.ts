@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { JsonObjectSchema, TimestampSchema, UuidSchema } from '../primitives.js';
-import { ApplicationStateSchema } from '../states.js';
+import { JsonObjectSchema, TimestampSchema, UuidSchema } from '../primitives.ts';
+import { ApplicationStateSchema } from '../states.ts';
 
 /**
  * The aggregate root, the lender-only half of a decision, and the two

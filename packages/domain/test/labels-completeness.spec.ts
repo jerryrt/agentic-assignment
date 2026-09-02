@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ApplicationState, AudienceLabels, StateLabelMap } from '../src/index.js';
+import type { ApplicationState, AudienceLabels, StateLabelMap } from '../src/index.ts';
 
 /**
  * The runtime tests in labels.spec.ts prove that today's map is complete. This

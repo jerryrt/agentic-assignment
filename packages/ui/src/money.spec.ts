@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import type { Money } from '@lj/domain';
 import { moneyFromMinorUnits } from '@lj/domain';
 
-import { LjMoney } from './money.js';
+import { LjMoney } from './money.ts';
 
 @Component({
   selector: 'lj-money-host',

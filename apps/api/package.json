@@ -7,7 +7,7 @@
     "node": "24.x"
   },
   "scripts": {
-    "dev": "node --import ./dev/ts-source-resolution.ts --watch dev/local-server.ts",
+    "dev": "node --watch dev/local-server.ts",
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.portable.json"

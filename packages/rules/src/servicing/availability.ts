@@ -8,10 +8,10 @@ import {
   sumMoney,
 } from '@lj/domain';
 
-import { numericAtLeast, numericAtMost } from '../engine/numeric.js';
-import { predicate } from '../engine/predicate.js';
-import { known, readNumber } from '../engine/reading.js';
-import { type Rule, type RuleDecision, decide, evaluate } from '../engine/rule.js';
+import { numericAtLeast, numericAtMost } from '../engine/numeric.ts';
+import { predicate } from '../engine/predicate.ts';
+import { known, readNumber } from '../engine/reading.ts';
+import { type Rule, type RuleDecision, decide, evaluate } from '../engine/rule.ts';
 
 /**
  * Credit availability: the guard on `credit_release: draft -> submitted`

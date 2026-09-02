@@ -10,7 +10,7 @@ import {
   evaluateConsistency,
   type ConsistencyContext,
   type DocumentSlotView,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const money = moneyFromNumericString;
 

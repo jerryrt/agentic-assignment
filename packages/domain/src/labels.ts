@@ -1,5 +1,5 @@
-import type { AppRole } from './roles.js';
-import type { ApplicationState, CreditReleaseState } from './states.js';
+import type { AppRole } from './roles.ts';
+import type { ApplicationState, CreditReleaseState } from './states.ts';
 
 /**
  * "Two roles, two truths" (plan 02), at the vocabulary layer.

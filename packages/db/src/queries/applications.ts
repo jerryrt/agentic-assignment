@@ -25,9 +25,9 @@
  * the lender-only fields are not there to be read.
  */
 
-import type { DatabaseClient } from '../client.js';
-import type { Database, Json } from '../database.types.js';
-import { unwrapList, unwrapMaybe } from '../errors.js';
+import type { DatabaseClient } from '../client.ts';
+import type { Database, Json } from '../database.types.ts';
+import { unwrapList, unwrapMaybe } from '../errors.ts';
 
 type ApplicationTable = Database['public']['Tables']['application'];
 

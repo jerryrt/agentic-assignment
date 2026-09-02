@@ -17,22 +17,22 @@
  * lint rules reject, so this list is the whole contract.
  */
 
-export * from './engine/reading.js';
-export * from './engine/figures.js';
-export * from './engine/rule.js';
-export * from './engine/numeric.js';
-export * from './engine/exact.js';
-export * from './engine/agreement.js';
-export * from './engine/predicate.js';
+export * from './engine/reading.ts';
+export * from './engine/figures.ts';
+export * from './engine/rule.ts';
+export * from './engine/numeric.ts';
+export * from './engine/exact.ts';
+export * from './engine/agreement.ts';
+export * from './engine/predicate.ts';
 
-export * from './eligibility/context.js';
-export * from './eligibility/fields.js';
-export * from './eligibility/criteria.js';
-export * from './eligibility/rules.js';
+export * from './eligibility/context.ts';
+export * from './eligibility/fields.ts';
+export * from './eligibility/criteria.ts';
+export * from './eligibility/rules.ts';
 
-export * from './documents/context.js';
-export * from './documents/entity-name.js';
-export * from './documents/completeness.js';
-export * from './documents/consistency.js';
+export * from './documents/context.ts';
+export * from './documents/entity-name.ts';
+export * from './documents/completeness.ts';
+export * from './documents/consistency.ts';
 
-export * from './servicing/availability.js';
+export * from './servicing/availability.ts';

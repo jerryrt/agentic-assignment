@@ -17,7 +17,7 @@ import {
   overallRulePresentation,
   ruleRow,
   rulePresentation,
-} from './rule-presentation.js';
+} from './rule-presentation.ts';
 
 describe('rulePresentation', () => {
   // The whole point of the table is that it is exhaustive: every combination
