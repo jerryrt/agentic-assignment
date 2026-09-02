@@ -2390,17 +2390,32 @@ describe('the servicing query helpers', () => {
 // These are the last tests in the file on purpose: each one moves a fixture row
 // to generate the change it waits for.
 
+const REALTIME_PROBE_WINDOW_MS = 40_000;
+const REALTIME_PROBE_RETRY_MS = 2_000;
+
 /**
  * Waits for the row change `column = expected` to arrive over the socket, or
  * fails with a timeout that names the likely cause.
  *
- * It waits for the MATCHING payload rather than for the first one, and that is
- * not defensive coding. Realtime reads the write-ahead log a beat behind the
- * writer and fans out to whichever channels are subscribed when it gets there,
- * so a subscription opened moments after an earlier update to the same row can
- * legitimately be handed that earlier update first. Resolving on the first
- * payload made this test fail with the previous value of the column -- which
- * looks like a broken publication and is not one.
+ * Two things here are about realtime's shape rather than about caution.
+ *
+ * It waits for the MATCHING payload rather than for the first one. Realtime
+ * reads the write-ahead log a beat behind the writer and fans out to whichever
+ * channels are subscribed when it gets there, so a subscription opened moments
+ * after an earlier update to the same row can legitimately be handed that
+ * earlier update first. Resolving on the first payload made this fail with the
+ * PREVIOUS value of the column, which looks like a broken publication and is
+ * not one.
+ *
+ * It also re-issues the change every two seconds until one arrives, rather than
+ * writing once and waiting. `SUBSCRIBED` says the channel has joined; it does
+ * not say the replication side is delivering yet, and on a stack whose realtime
+ * container has just started the first subscription of a run can miss a change
+ * written immediately after it. The retry costs nothing when the socket is warm
+ * -- the first payload arrives in milliseconds -- and it removes the only
+ * failure mode this probe had that was not about the publication. An UPDATE
+ * writing the same value still writes a new row version, so a repeat is a real
+ * change as far as the log is concerned.
  */
 async function awaitRowChange(
   user: TestUser,
@@ -2418,16 +2433,32 @@ async function awaitRowChange(
   // is `anon`, whom no policy admits.
   await client.realtime.setAuth(user.token);
 
+  let retry: ReturnType<typeof setInterval> | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
+      const stop = (): void => {
+        clearTimeout(timer);
+        if (retry !== undefined) {
+          clearInterval(retry);
+        }
+      };
       const timer = setTimeout(() => {
+        stop();
         reject(
           new Error(
-            `no realtime payload for ${table}.${column} within 15s; is the table ` +
-              'in the supabase_realtime publication? (0007_servicing.sql adds it)',
+            `no realtime payload for ${table}.${column} within ` +
+              `${String(REALTIME_PROBE_WINDOW_MS / 1000)}s; is the table in the ` +
+              'supabase_realtime publication? (0007_servicing.sql adds it)',
           ),
         );
-      }, 15_000);
+      }, REALTIME_PROBE_WINDOW_MS);
+
+      const write = (): void => {
+        void Promise.resolve(change()).catch((error: unknown) => {
+          stop();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+      };
 
       client
         .channel(`probe-${table}-${rowId}`)
@@ -2437,27 +2468,28 @@ async function awaitRowChange(
           (payload) => {
             const row = payload.new as Record<string, unknown>;
             if (row[column] === expected) {
-              clearTimeout(timer);
+              stop();
               resolve();
             }
           },
         )
         .subscribe((status) => {
           // The change is made only once the subscription is live, otherwise
-          // the test races the socket and fails for the wrong reason.
+          // the probe races the socket and fails for the wrong reason.
           if (status === 'SUBSCRIBED') {
-            void Promise.resolve(change()).catch((error: unknown) => {
-              clearTimeout(timer);
-              reject(error instanceof Error ? error : new Error(String(error)));
-            });
+            write();
+            retry = setInterval(write, REALTIME_PROBE_RETRY_MS);
           }
           if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            clearTimeout(timer);
+            stop();
             reject(new Error(`realtime subscription for ${table} reported ${status}`));
           }
         });
     });
   } finally {
+    if (retry !== undefined) {
+      clearInterval(retry);
+    }
     await client.removeAllChannels();
   }
 }
@@ -2475,7 +2507,7 @@ describe('the realtime publication', () => {
     await awaitRowChange(borrowerA, 'credit_release', releaseTransient, 'purpose', moved, () =>
       service.from('credit_release').update({ purpose: moved }).eq('id', releaseTransient),
     );
-  }, 30_000);
+  }, 60_000);
 
   // Phase 6 deferred realtime on the document pack for want of a channel
   // factory. The factory exists now, and the table being published is the other
@@ -2486,5 +2518,5 @@ describe('the realtime publication', () => {
     await awaitRowChange(borrowerA, 'document_slot', slotReviewed, 'label', moved, () =>
       service.from('document_slot').update({ label: moved }).eq('id', slotReviewed),
     );
-  }, 30_000);
+  }, 60_000);
 });
