@@ -1,0 +1,92 @@
+/* The shell's own layout. Every colour is a token from
+   @lj/ui/tokens/_tokens.css, wired in src/styles.scss. */
+
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 8px 12px;
+  background: var(--lj-raised);
+  color: var(--lj-text);
+  border: 1px solid var(--lj-border-strong);
+  border-radius: 0 0 6px 0;
+  z-index: 10;
+}
+
+/* Visible only when it has focus: a keyboard user gets past the header in one
+   key, and a mouse user never sees it (design/00-foundations.md). */
+.skip-link:focus {
+  left: 0;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--lj-border);
+  background: var(--lj-surface);
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--lj-text);
+  text-decoration: none;
+}
+
+.shell-nav {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+}
+
+.shell-nav a {
+  color: var(--lj-muted);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 4px 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.shell-nav a:hover {
+  color: var(--lj-text);
+}
+
+/* Underline as well as colour: the current page must be identifiable in
+   greyscale (design/00-foundations.md). */
+.shell-nav a.is-active {
+  color: var(--lj-primary);
+  border-bottom-color: var(--lj-primary);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 14px;
+}
+
+.identity-name {
+  font-weight: 600;
+}
+
+.identity-role {
+  padding: 1px 8px;
+  border: 1px solid var(--lj-border-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--lj-muted);
+}

@@ -96,8 +96,29 @@ is worth knowing before Phase 0 rather than during it.
 - **pnpm workspaces** (`pnpm-workspace.yaml`). Chosen over npm for strict node_modules -- it
   surfaces phantom dependencies, which matters when five packages share one graph.
 - Internal packages are consumed as **TS source, not built dist** (`"exports": "./src/index.ts"`,
-  `publishConfig` unused). One less build step; Angular's and Vercel's bundlers both handle it.
-  Trade-off: `typecheck` must run repo-wide, which it does anyway.
+  `publishConfig` unused). One less build step. Trade-off: `typecheck` must run repo-wide, which
+  it does anyway.
+- **A relative import inside a package names a `.ts` file**, because that is the file that exists.
+  The `.js` spelling `node16` resolution expects describes emitted output, and nothing here is
+  emitted; Node resolves it literally, finds nothing, and fails. `allowImportingTsExtensions` is
+  set for this reason.
+- **`apps/api` is the exception: it builds.** An earlier version of this document said Angular's
+  and Vercel's bundlers both handled TS source. Angular's does. Vercel's zero-config Node builder
+  does not: it transpiles the entry file and leaves every import to resolve at run time, so a
+  package reached through pnpm's symlinked `node_modules` is simply absent from the deployed
+  function -- `ERR_MODULE_NOT_FOUND` on a `.ts` file that was never uploaded. Asking the platform
+  to include those sources fails differently: *"the framework produced an invalid deployment
+  package ... files in symlinked directories."*
+
+  So the API's handlers live in `apps/api/src/routes/` and are bundled by esbuild into plain
+  JavaScript with every import inlined, the database driver included -- a deployed function has no
+  `node_modules`, so an external import is a resolution with nowhere to succeed. What sits in
+  `apps/api/api/` is a one-line re-export of that bundle.
+
+  This claim went unexercised for three phases, because nothing deployed imported a workspace
+  package until the transition endpoint did. It is recorded here in the state it was actually
+  found, rather than as advice, so the next person to change how the API ships knows what was
+  measured and what merely sounded right.
 - **Every workspace package is named `@lj/<dir>`** -- `packages/domain` is `@lj/domain`,
   `apps/web` is `@lj/web`. The directory name and the package name are independent in npm, so
   the convention has to be stated or nine manifests will disagree. A scope makes an internal

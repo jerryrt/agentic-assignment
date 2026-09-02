@@ -89,13 +89,12 @@ test.describe('a deep link', () => {
   });
 });
 
-// Expected to fail while the defect above stands, and that is the point: this
-// records it in the suite instead of in a comment nobody runs.  The day someone
-// adds a wildcard route, Playwright reports "expected to fail but passed" and
-// this marker gets deleted -- which is a far better reminder than a TODO.
+// This recorded a real defect as an expected failure rather than as a comment
+// nobody runs: with no wildcard route, a deep link reached the shell and Angular
+// logged NG04002 while rendering nothing.  web-core added the route, Playwright
+// reported "expected to fail but passed", and the marker came off -- which is
+// what that mechanism is for.
 test.describe('the same deep link, with the console guard left on', () => {
-  test.fail(true, 'app.routes.ts has no wildcard route, so a deep link logs NG04002');
-
   test('reaches the shell without an unhandled router error', async ({ page }) => {
     await page.goto(DEEP_LINK);
     await expect(page.locator('app-root')).toBeAttached();

@@ -1,1 +1,36 @@
-<router-outlet />
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="shell-header">
+  <a class="brand" routerLink="/">Land Journey</a>
+
+  @if (auth.isSignedIn()) {
+    <nav class="shell-nav" aria-label="Main">
+      @for (item of navigation(); track item.path) {
+        <a [routerLink]="item.path" routerLinkActive="is-active" [routerLinkActiveOptions]="exact">
+          {{ item.label }}
+        </a>
+      }
+    </nav>
+
+    <div class="identity">
+      <span class="identity-name" data-testid="signed-in-as">{{ auth.displayName() }}</span>
+      @if (auth.role(); as role) {
+        <span class="identity-role" data-testid="signed-in-role">{{ role }}</span>
+      }
+      <button class="lj-button lj-button--quiet" type="button" (click)="signOut()" data-testid="sign-out">
+        Sign out
+      </button>
+    </div>
+  } @else if (auth.status() !== 'restoring') {
+    <!-- Signed out, or the build carried no Supabase configuration. Both get the
+         way in: the sign-in screen is where the second one is explained. -->
+
+    <div class="identity">
+      <a class="lj-button lj-button--quiet" routerLink="/signin" data-testid="sign-in-link">Sign in</a>
+    </div>
+  }
+</header>
+
+<main id="main">
+  <router-outlet />
+</main>
