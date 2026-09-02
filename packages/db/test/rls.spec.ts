@@ -20,6 +20,11 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  LoanBalanceSchema,
+  borrowerAvailableCredit,
+  lenderUndrawnLimit,
+} from '@lj/domain';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -29,9 +34,28 @@ import {
   recordApplicationDecision,
 } from '../src/queries/application-decisions.ts';
 import {
+  deleteCreditReleaseDraft,
+  getCreditRelease,
+  getCreditReleaseForBorrower,
+  getCreditReleaseForLender,
+  getCreditReleaseNote,
+  insertCreditRelease,
+  listCreditReleaseQueue,
+  listCreditReleasesForBorrower,
+  updateCreditRelease,
+  upsertCreditReleaseNote,
+} from '../src/queries/credit-releases.ts';
+import {
   insertEligibilitySnapshot,
   listEligibilitySnapshots,
 } from '../src/queries/eligibility-snapshots.ts';
+import {
+  getLoan,
+  getLoanBalance,
+  insertLedgerEntry,
+  listLedgerEntries,
+  listLoans,
+} from '../src/queries/loans.ts';
 
 type Client = SupabaseClient<Database>;
 
@@ -186,6 +210,20 @@ let storedObject: string;
 let snapshotReviewed: string; // the eligibility snapshot taken for appReviewed
 let snapshotOther: string; // borrower B's snapshot, at the other organisation
 
+// Option 3. Two loans, one per organisation, so every "cannot read" below has
+// a matching "and this caller can" -- a refusal probed only against an absent
+// row proves nothing.
+let productBeta: string; // orgBeta needs a product of its own to hang a loan on
+let loanA: string; // borrower A, org alpha, against appReviewed
+let loanOther: string; // borrower B, org beta, against appOther
+let releaseDraft: string; // loan A, still being composed by borrower A
+let releaseSubmitted: string; // loan A, pending -- the row that makes `pending` non-zero
+let releaseDeclined: string; // loan A, decided, with a reason and a private note
+let releaseTransient: string; // loan A, walked through the machine by the balance probe
+let releaseOther: string; // loan B, pending, at the other organisation
+let ledgerDraw: number; // the draw on loan A, named so the append-only probe can find it
+let ledgerOtherDraw: number; // the draw on loan B
+
 // The note recorded against appReviewed. Assertions name the literal rather
 // than "some non-null string", because a leak has to be legible: a probe that
 // only checked the column was populated would pass on an empty one.
@@ -197,6 +235,26 @@ const riskGrade = 'B';
 // as confidential as the application it belongs to, and the assertions below
 // name this literal for the same reason the decision note is named: a probe
 // that only checked "some jsonb came back" would pass on an empty row.
+// The lender's private note on the declined release, and the reason the
+// borrower is entitled to read. Named literals for the reason the decision note
+// is one: a leak has to be legible, and a probe that only checked "some text
+// came back" would pass on an empty column. These two strings are the whole
+// point of the column-versus-row argument -- one is readable by the borrower
+// the release belongs to and the other must not be, and they sit on the same
+// request.
+const releaseInternalNote = 'internal: second request this month, watch the pattern';
+const releaseDeclineReason = 'The line is drawn to 71 per cent. Resubmit after the first delivery.';
+const otherInternalNote = 'internal: beta org note, visible to beta lenders only';
+
+// The figures loan A's balance derives from. Written as the exact decimal text
+// Postgres renders, because that is what these assertions are about: the
+// balance must arrive with its cents intact, and 45000.00 must be exactly
+// 4,500,000 minor units rather than whatever a binary double lands on.
+const loanApprovedLimit = '100000.00';
+const loanDrawAmount = '40000.00';
+const loanRepaymentAmount = '-10000.00';
+const releaseSubmittedAmount = '25000.00';
+
 const snapshotProductName = 'Operating line, as evaluated at submit';
 const snapshotEligibility = [
   {
@@ -282,6 +340,23 @@ beforeAll(async () => {
     promoteToLender(lender, orgAlpha),
     promoteToLender(lenderBeta, orgBeta),
   ]);
+
+  // signUpUser posts no full_name, so handle_new_user leaves the column null.
+  // The lender projection resolves two names out of `profile`, and a null name
+  // would make "the borrower cannot see who decided" pass against a name that
+  // was never there -- the absent-object failure #41 shipped, in another shape.
+  const named = await service
+    .from('profile')
+    .update({ full_name: 'Fixture Lender' })
+    .eq('id', lender.id)
+    .select('id');
+  if (named.error !== null || named.data?.length !== 1) {
+    throw new Error(`could not name the lender fixture: ${named.error?.message ?? 'no row'}`);
+  }
+  //
+  // Only the lender is named here. Borrower A's display name is written by the
+  // profile_update_own probe further down, so pinning it in a fixture would set
+  // up two authors for one column and a failure that depends on test order.
 
   // `data` carries a marker rather than a plausible payload, because the two
   // under_review rows are otherwise indistinguishable and each is picked out of
@@ -458,6 +533,222 @@ beforeAll(async () => {
   if (stored.error !== null) {
     throw new Error(`fixture storage object failed: ${stored.error.message}`);
   }
+
+  // Option 3 -------------------------------------------------------------
+  //
+  // A loan per organisation. Borrower B's exists so that every refusal below
+  // is answered by the same read succeeding for the caller it is meant for:
+  // "borrower B cannot see loan A" is only evidence if borrower B can see a
+  // loan at all.
+  productBeta = await insertReturningId('loan_product', {
+    org_id: orgBeta,
+    name: 'Beta operating line',
+    criteria: { dscr_floor: 1.1 },
+    required_docs: [],
+    active: true,
+  });
+
+  // `as never` for the reason insertReturningId uses it, plus one specific to
+  // money: the generated Insert type says `approved_limit` is a number, and
+  // money is written as the exact decimal string PostgREST parses without a
+  // float in the way. The database checks the payload; the type does not.
+  const loans = await service
+    .from('loan')
+    .insert([
+      {
+        application_id: appReviewed,
+        borrower_id: borrowerA.id,
+        org_id: orgAlpha,
+        product_id: productAlpha,
+        approved_limit: loanApprovedLimit,
+        rate_bps: 875,
+      },
+      {
+        application_id: appOther,
+        borrower_id: borrowerB.id,
+        org_id: orgBeta,
+        product_id: productBeta,
+        approved_limit: '50000.00',
+        rate_bps: 940,
+      },
+    ] as never)
+    .select('id, application_id');
+  if (loans.error !== null || loans.data === null) {
+    throw new Error(`fixture loans failed: ${loans.error?.message ?? 'no rows'}`);
+  }
+  const insertedLoans = loans.data;
+  const loanFor = (applicationId: string): string => {
+    const row = insertedLoans.find((loan) => loan.application_id === applicationId);
+    if (row === undefined) {
+      throw new Error(`fixture loan for ${applicationId} did not come back as inserted`);
+    }
+    return row.id;
+  };
+  loanA = loanFor(appReviewed);
+  loanOther = loanFor(appOther);
+
+  // Four releases across the two loans, each in a state that is probed for
+  // something different: a draft the borrower may still edit, a pending one
+  // that holds credit against the balance, a decided one carrying both a
+  // shared reason and a private note, and one at the other organisation.
+  //
+  // `state` is written directly because the transition trigger fires on UPDATE
+  // only. Walking each through the machine would be exercising the API's job,
+  // not the policies'.
+  const releases = await service
+    .from('credit_release')
+    .insert([
+      // `state` is spelled out on every row, including the one that wants the
+      // default. A PostgREST bulk insert unifies the keys across the array and
+      // sends null for any a row omits, so leaving it off here is not "take
+      // the default" -- it is a not-null violation.
+      {
+        loan_id: loanA,
+        amount: '5000.00',
+        purpose: 'fixture: draft',
+        state: 'draft',
+        requested_by: borrowerA.id,
+      },
+      {
+        loan_id: loanA,
+        amount: releaseSubmittedAmount,
+        purpose: 'fixture: submitted',
+        state: 'submitted',
+        requested_by: borrowerA.id,
+      },
+      {
+        loan_id: loanA,
+        amount: '12000.00',
+        purpose: 'fixture: declined',
+        state: 'declined',
+        requested_by: borrowerA.id,
+        decided_by: lender.id,
+        decline_reason: releaseDeclineReason,
+      },
+      // Walked through the machine by the balance probe, which needs a request
+      // it can legally move without disturbing the three above. It starts as a
+      // draft and ends cancelled, so it holds no credit at either end and the
+      // named balance figures elsewhere in this file stay true.
+      {
+        loan_id: loanA,
+        amount: '7000.00',
+        purpose: 'fixture: transient',
+        state: 'draft',
+        requested_by: borrowerA.id,
+      },
+      {
+        loan_id: loanOther,
+        amount: '3000.00',
+        purpose: 'fixture: other org',
+        state: 'submitted',
+        requested_by: borrowerB.id,
+      },
+    ] as never)
+    .select('id, purpose');
+  if (releases.error !== null || releases.data === null) {
+    throw new Error(`fixture credit_release failed: ${releases.error?.message ?? 'no rows'}`);
+  }
+  const insertedReleases = releases.data;
+  const releaseFor = (purpose: string): string => {
+    const row = insertedReleases.find((release) => release.purpose === purpose);
+    if (row === undefined) {
+      throw new Error(`fixture release "${purpose}" did not come back as inserted`);
+    }
+    return row.id;
+  };
+  releaseDraft = releaseFor('fixture: draft');
+  releaseSubmitted = releaseFor('fixture: submitted');
+  releaseDeclined = releaseFor('fixture: declined');
+  releaseTransient = releaseFor('fixture: transient');
+  releaseOther = releaseFor('fixture: other org');
+
+  // One note per organisation. The beta one is what turns "a lender at another
+  // organisation reads no note" from a statement about an empty table into a
+  // statement about a policy.
+  const notes = await service.from('credit_release_note').insert([
+    {
+      release_id: releaseDeclined,
+      internal_note: releaseInternalNote,
+      recorded_by: lender.id,
+    },
+    {
+      release_id: releaseOther,
+      internal_note: otherInternalNote,
+      recorded_by: lenderBeta.id,
+    },
+  ]);
+  if (notes.error !== null) {
+    throw new Error(`fixture credit_release_note failed: ${notes.error.message}`);
+  }
+
+  // Two entries on loan A so the outstanding figure is a SUM of a positive and
+  // a negative rather than a single number that a case expression would have
+  // produced just as well. 40000.00 - 10000.00 = 30000.00 outstanding.
+  const ledger = await service
+    .from('ledger_entry')
+    .insert([
+      {
+        loan_id: loanA,
+        kind: 'draw',
+        amount: loanDrawAmount,
+        effective: '2026-08-20',
+        memo: 'fixture: opening advance',
+      },
+      {
+        loan_id: loanA,
+        kind: 'repayment',
+        amount: loanRepaymentAmount,
+        effective: '2026-08-27',
+        memo: 'fixture: repayment',
+      },
+      {
+        loan_id: loanOther,
+        kind: 'draw',
+        amount: '1500.00',
+        effective: '2026-08-21',
+        memo: 'fixture: other org advance',
+      },
+    ] as never)
+    .select('id, memo');
+  if (ledger.error !== null || ledger.data === null) {
+    throw new Error(`fixture ledger_entry failed: ${ledger.error?.message ?? 'no rows'}`);
+  }
+  const insertedLedger = ledger.data;
+  const ledgerFor = (memo: string): number => {
+    const row = insertedLedger.find((entry) => entry.memo === memo);
+    if (row === undefined) {
+      throw new Error(`fixture ledger entry "${memo}" did not come back as inserted`);
+    }
+    return row.id;
+  };
+  ledgerDraw = ledgerFor('fixture: opening advance');
+  ledgerOtherDraw = ledgerFor('fixture: other org advance');
+
+  // One event per release, so the timeline policy added by 0007 is probed
+  // against a row that exists rather than against an empty log.
+  const releaseEvents = await service.from('workflow_event').insert([
+    {
+      machine: 'credit_release',
+      subject_id: releaseSubmitted,
+      from_state: 'draft',
+      to_state: 'submitted',
+      event: 'submit',
+      actor_id: borrowerA.id,
+      actor_role: 'borrower',
+    },
+    {
+      machine: 'credit_release',
+      subject_id: releaseOther,
+      from_state: 'draft',
+      to_state: 'submitted',
+      event: 'submit',
+      actor_id: borrowerB.id,
+      actor_role: 'borrower',
+    },
+  ]);
+  if (releaseEvents.error !== null) {
+    throw new Error(`fixture credit_release events failed: ${releaseEvents.error.message}`);
+  }
 }, 60_000);
 
 afterAll(async () => {
@@ -486,11 +777,18 @@ afterAll(async () => {
   // too, so the cascade is not a convenience here but the only route: a
   // referential action runs as the owner of the referencing table and is not
   // subject to the deleting role's privileges on it.
+  //
+  // The Option 3 fixtures go the same way, and only that way. `loan` cascades
+  // from `application`, and `ledger_entry`, `credit_release` and
+  // `credit_release_note` cascade from `loan` -- which is not a convenience
+  // here either: 0007_servicing.sql revokes DELETE on ledger_entry from
+  // service_role too, so a teardown that removed entries directly would be
+  // exercising a path production does not have.
   await service
     .from('application')
     .delete()
     .in('id', [appDraft, appReviewed, appQueued, appOther]);
-  await service.from('loan_product').delete().eq('id', productAlpha);
+  await service.from('loan_product').delete().in('id', [productAlpha, productBeta]);
   // Both lenders' profiles point at an organisation, and profile rows outlive
   // the run.
   await service
@@ -528,6 +826,18 @@ describe('anonymous callers', () => {
 
   it('reads no eligibility snapshots', async () => {
     expect(readable(await anon.from('eligibility_snapshot').select('id'))).toEqual([]);
+  });
+
+  // Every table and every projection Option 3 adds. Listed one by one rather
+  // than looped, because the failure has to name the relation that leaked.
+  it('reads nothing of a loan, its ledger or its releases', async () => {
+    expect(readable(await anon.from('loan').select('id'))).toEqual([]);
+    expect(readable(await anon.from('ledger_entry').select('id'))).toEqual([]);
+    expect(readable(await anon.from('credit_release').select('id'))).toEqual([]);
+    expect(readable(await anon.from('credit_release_note').select('release_id'))).toEqual([]);
+    expect(readable(await anon.from('loan_balance_v').select('loan_id'))).toEqual([]);
+    expect(readable(await anon.from('credit_release_borrower_v').select('id'))).toEqual([]);
+    expect(readable(await anon.from('credit_release_lender_v').select('id'))).toEqual([]);
   });
 
   it('reads no organisations and no loan products', async () => {
@@ -1355,4 +1665,826 @@ describe('the decision query helpers', () => {
     // leak the existence of a decision the caller may not see.
     expect(await getApplicationDecision(clientA, appReviewed)).toBeNull();
   });
+});
+
+// Option 3: the facility, the ledger, the requests, and the two truths -------
+//
+// Every refusal below is paired with the same read succeeding for the caller it
+// is meant for, in the same test wherever the pairing is what makes the point.
+// A "cannot read" that is never shown to read for anybody proves only that
+// something is absent.
+
+describe('the loan', () => {
+  it('is read by the borrower it belongs to', async () => {
+    const { data, error } = await clientA.from('loan').select('*').eq('id', loanA).single();
+    expect(error).toBeNull();
+    expect(data?.borrower_id).toBe(borrowerA.id);
+  });
+
+  it('is not read by another borrower, who reads their own', async () => {
+    const rows = readable(await clientB.from('loan').select('id'));
+    expect(rows.map((row) => row.id)).toEqual([loanOther]);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    const mine = readable(await clientLender.from('loan').select('id'));
+    expect(mine.map((row) => row.id)).toEqual([loanA]);
+
+    const theirs = readable(await clientLenderBeta.from('loan').select('id'));
+    expect(theirs.map((row) => row.id)).toEqual([loanOther]);
+  });
+
+  // SELECT and nothing else. A facility is opened by the funding effect with
+  // the service role -- which the fixtures above have just demonstrated -- and
+  // no part of the design lets a client open, close or re-price one.
+  it('cannot be opened by a client, though the service role opens one', async () => {
+    const borrowerAttempt = await clientA.from('loan').insert({
+      application_id: appReviewed,
+      borrower_id: borrowerA.id,
+      org_id: orgAlpha,
+      product_id: productAlpha,
+      approved_limit: 999_999,
+      rate_bps: 0,
+    });
+    expect(borrowerAttempt.error).not.toBeNull();
+
+    const lenderAttempt = await clientLender.from('loan').insert({
+      application_id: appReviewed,
+      borrower_id: borrowerA.id,
+      org_id: orgAlpha,
+      product_id: productAlpha,
+      approved_limit: 999_999,
+      rate_bps: 0,
+    });
+    expect(lenderAttempt.error).not.toBeNull();
+
+    const check = await service.from('loan').select('id').eq('application_id', appReviewed);
+    expect(check.data?.length).toBe(1);
+  });
+
+  // A borrower raising their own limit is the most valuable write in the
+  // schema, so it is the one worth naming.
+  it('cannot have its limit raised by the borrower or by the lender', async () => {
+    expect(
+      (await clientA.from('loan').update({ approved_limit: 999_999 }).eq('id', loanA)).error,
+    ).not.toBeNull();
+    expect(
+      (await clientLender.from('loan').update({ approved_limit: 999_999 }).eq('id', loanA)).error,
+    ).not.toBeNull();
+
+    const check = await getLoan(service, loanA);
+    expect(check?.approved_limit).toBe(loanApprovedLimit);
+  });
+});
+
+describe('the ledger', () => {
+  it('is read by the borrower whose loan it records', async () => {
+    const rows = readable(await clientA.from('ledger_entry').select('id'));
+    expect(rows.map((row) => row.id)).toContain(ledgerDraw);
+  });
+
+  it('is not read by another borrower, who reads their own', async () => {
+    const rows = readable(await clientB.from('ledger_entry').select('id'));
+    expect(rows.map((row) => row.id)).not.toContain(ledgerDraw);
+    expect(rows.map((row) => row.id)).toContain(ledgerOtherDraw);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    const mine = readable(await clientLender.from('ledger_entry').select('id'));
+    expect(mine.map((row) => row.id)).toContain(ledgerDraw);
+
+    const theirs = readable(await clientLenderBeta.from('ledger_entry').select('id'));
+    expect(theirs.map((row) => row.id)).not.toContain(ledgerDraw);
+    expect(theirs.map((row) => row.id)).toContain(ledgerOtherDraw);
+  });
+
+  // No client write of any kind. A client that could append to a ledger could
+  // invent a repayment; a lender that could append could invent a draw against
+  // a borrower who never asked for one.
+  it('takes no entry from any client, though the service role posts one', async () => {
+    const borrowerAttempt = await clientA.from('ledger_entry').insert({
+      loan_id: loanA,
+      kind: 'repayment',
+      amount: -30_000,
+      effective: '2026-08-28',
+    });
+    expect(borrowerAttempt.error).not.toBeNull();
+
+    const lenderAttempt = await clientLender.from('ledger_entry').insert({
+      loan_id: loanA,
+      kind: 'fee',
+      amount: 99,
+      effective: '2026-08-28',
+    });
+    expect(lenderAttempt.error).not.toBeNull();
+
+    // The positive control, and the reason the two refusals above mean
+    // something: the same insert succeeds for the caller the ledger IS written
+    // by. There is no delete for it, by design, so it goes with its loan by
+    // cascade at teardown -- and it is posted against the OTHER loan, because
+    // the balance assertions below name loan A's figures to the cent and a
+    // probe that moved them would be a probe that had to be kept in step with
+    // an arithmetic assertion in another file section.
+    const posted = await insertLedgerEntry(service, {
+      loan_id: loanOther,
+      kind: 'fee',
+      amount: '25.00',
+      effective: '2026-08-28',
+      memo: 'fixture: probe fee',
+    });
+    expect(posted?.amount).toBe('25.00');
+  });
+
+  // Append-only, and meant literally: no UPDATE and no DELETE for anyone,
+  // service_role included. A ledger that can be edited after the fact is not a
+  // ledger, and a leaked service key must not be able to make one agree with
+  // whatever was said afterwards.
+  it('cannot be rewritten or removed, by a client or by the service role', async () => {
+    expect(
+      (await clientA.from('ledger_entry').update({ amount: 0.01 }).eq('id', ledgerDraw)).error,
+    ).not.toBeNull();
+    expect(
+      (await service.from('ledger_entry').update({ amount: 0.01 }).eq('id', ledgerDraw)).error,
+    ).not.toBeNull();
+    expect((await service.from('ledger_entry').delete().eq('id', ledgerDraw)).error).not.toBeNull();
+
+    const entries = await listLedgerEntries(service, loanA);
+    expect(entries.map((entry) => entry.amount)).toContain(loanDrawAmount);
+  });
+});
+
+describe('the balance view', () => {
+  it('is read by the borrower whose loan it derives from', async () => {
+    const balance = await getLoanBalance(clientA, loanA);
+    expect(balance?.loan_id).toBe(loanA);
+  });
+
+  it('is not read by another borrower, who reads their own', async () => {
+    expect(await getLoanBalance(clientB, loanA)).toBeNull();
+    expect((await getLoanBalance(clientB, loanOther))?.loan_id).toBe(loanOther);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    expect((await getLoanBalance(clientLender, loanA))?.loan_id).toBe(loanA);
+    expect(await getLoanBalance(clientLenderBeta, loanA)).toBeNull();
+    expect((await getLoanBalance(clientLenderBeta, loanOther))?.loan_id).toBe(loanOther);
+  });
+
+  // The assertion this whole option exists to make.
+  //
+  // `available` is net of pending because the submit guard compares against
+  // that same quantity. If the view and the guard disagreed, a borrower could
+  // submit a request the screen had just told them was affordable -- and the
+  // disagreement would be invisible until somebody reconciled a statement.
+  //
+  // The numbers are named rather than recomputed from the fixtures, so a view
+  // that quietly stopped subtracting `pending` fails here with a figure a
+  // reader can check by hand: 100000.00 limit, 40000.00 drawn less a 10000.00
+  // repayment, 25000.00 held by the request under review, 45000.00 left.
+  it('nets the borrower available credit against pending releases', async () => {
+    const row = await getLoanBalance(clientA, loanA);
+    expect(row).not.toBeNull();
+    const balance = LoanBalanceSchema.parse(row);
+
+    expect(balance.approved_limit).toBe(10_000_000);
+    expect(balance.outstanding).toBe(3_000_000);
+    expect(balance.pending).toBe(2_500_000);
+    expect(balance.available).toBe(4_500_000);
+
+    expect(borrowerAvailableCredit(balance)).toBe(balance.available);
+    expect(lenderUndrawnLimit(balance) - borrowerAvailableCredit(balance)).toBe(balance.pending);
+  });
+
+  // Money arrives as text and not as the float PostgREST renders from a numeric
+  // column. Asserted here, at the boundary, rather than trusted: JSON.parse
+  // turns 45000.00 into a binary double before any schema sees it, and the cent
+  // this codebase refuses to lose is lost by then.
+  it('renders money as exact decimal text, not as a JSON number', async () => {
+    const row = await getLoanBalance(clientA, loanA);
+    expect(typeof row?.available).toBe('string');
+    expect(row?.available).toBe('45000.00');
+  });
+
+  // A pending release holds credit and posts nothing, so submitting one must
+  // move `available` and leave `outstanding` alone, and cancelling it must give
+  // the credit back. The derivation is not a snapshot, and this is the cheapest
+  // way to say so.
+  //
+  // Walked on the transient fixture rather than on the submitted one, and only
+  // along edges the machine declares. `assert_legal_transition` refuses
+  // anything else -- cancelled -> submitted included -- so a probe that
+  // "restored" a fixture by writing a state backwards would be a probe fighting
+  // the guard this schema exists to carry.
+  it('holds credit while a request is pending and gives it back when cancelled', async () => {
+    const before = LoanBalanceSchema.parse(await getLoanBalance(clientA, loanA));
+
+    const submitted = await service
+      .from('credit_release')
+      .update({ state: 'submitted' })
+      .eq('id', releaseTransient)
+      .select('id');
+    expect(submitted.error).toBeNull();
+
+    const held = LoanBalanceSchema.parse(await getLoanBalance(clientA, loanA));
+    expect(held.outstanding).toBe(before.outstanding);
+    expect(held.pending).toBe(before.pending + 700_000);
+    expect(held.available).toBe(before.available - 700_000);
+
+    const cancelled = await service
+      .from('credit_release')
+      .update({ state: 'cancelled' })
+      .eq('id', releaseTransient)
+      .select('id');
+    expect(cancelled.error).toBeNull();
+
+    const after = LoanBalanceSchema.parse(await getLoanBalance(clientA, loanA));
+    expect(after.outstanding).toBe(before.outstanding);
+    expect(after.pending).toBe(before.pending);
+    expect(after.available).toBe(before.available);
+  });
+});
+
+describe('a credit release', () => {
+  it('is read by the borrower who requested it', async () => {
+    const rows = readable(await clientA.from('credit_release').select('id'));
+    expect(ids(rows)).toEqual(
+      [releaseDraft, releaseSubmitted, releaseDeclined, releaseTransient].sort(),
+    );
+  });
+
+  it('is not read by another borrower, who reads their own', async () => {
+    const rows = readable(await clientB.from('credit_release').select('id'));
+    expect(ids(rows)).toEqual([releaseOther]);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    const mine = readable(await clientLender.from('credit_release').select('id'));
+    expect(mine.map((row) => row.id)).toContain(releaseSubmitted);
+
+    const theirs = readable(await clientLenderBeta.from('credit_release').select('id'));
+    expect(theirs.map((row) => row.id)).not.toContain(releaseSubmitted);
+    expect(theirs.map((row) => row.id)).toContain(releaseOther);
+  });
+
+  // The compose-and-autosave path, and the positive control every refusal below
+  // is measured against: a borrower really can write their own draft.
+  it('is composed and autosaved by the borrower while it is a draft', async () => {
+    const updated = await updateCreditRelease(clientA, {
+      releaseId: releaseDraft,
+      expectedRevision: 0,
+      patch: { purpose: 'fixture: draft, edited' },
+    });
+    expect(updated?.revision).toBe(1);
+
+    // And the revision guard: the same expected revision no longer matches.
+    const stale = await updateCreditRelease(clientA, {
+      releaseId: releaseDraft,
+      expectedRevision: 0,
+      patch: { purpose: 'fixture: draft, from a stale tab' },
+    });
+    expect(stale).toBeNull();
+  });
+
+  // A borrower who could write `state` could approve their own request. This is
+  // a privilege refusal rather than a policy one, exactly as application.state
+  // and document_slot.state are.
+  it('cannot have its state written by the borrower who requested it', async () => {
+    const { error } = await clientA
+      .from('credit_release')
+      .update({ state: 'approved' })
+      .eq('id', releaseSubmitted);
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('credit_release')
+      .select('state')
+      .eq('id', releaseSubmitted)
+      .single();
+    expect(check.data?.state).toBe('submitted');
+  });
+
+  // Nor by the lender who is entitled to decide it. Approving is a transition,
+  // and a transition goes through the API, which re-checks the role against the
+  // machine and appends an event. A direct write would move the state with no
+  // audit entry behind it, and would skip the revision check that makes two
+  // lender tabs serialise.
+  it('cannot have its state written by the lender either', async () => {
+    const { error } = await clientLender
+      .from('credit_release')
+      .update({ state: 'approved' })
+      .eq('id', releaseSubmitted);
+    expect(error).not.toBeNull();
+  });
+
+  // decline_reason is lender-authored and borrower-readable, and no client
+  // holds an UPDATE privilege on it -- because a borrower and a lender are the
+  // same database role, so a grant wide enough for the lender is wide enough
+  // for the borrower to forge one onto their own draft.
+  it('takes no decline reason from any client, borrower or lender', async () => {
+    expect(
+      (
+        await clientA
+          .from('credit_release')
+          .update({ decline_reason: 'forged by the borrower' })
+          .eq('id', releaseDraft)
+      ).error,
+    ).not.toBeNull();
+    expect(
+      (
+        await clientLender
+          .from('credit_release')
+          .update({ decline_reason: 'written without a decline' })
+          .eq('id', releaseSubmitted)
+      ).error,
+    ).not.toBeNull();
+
+    const check = await service
+      .from('credit_release')
+      .select('decline_reason')
+      .eq('id', releaseDeclined)
+      .single();
+    expect(check.data?.decline_reason).toBe(releaseDeclineReason);
+  });
+
+  // `using` and `with check` on the update policy both require 'draft', so a
+  // request that has left the borrower's hands is a record.
+  it('cannot be edited by the borrower once it has been submitted', async () => {
+    const updated = await updateCreditRelease(clientA, {
+      releaseId: releaseSubmitted,
+      expectedRevision: 0,
+      patch: { purpose: 'edited after submitting' },
+    });
+    expect(updated).toBeNull();
+
+    const check = await service
+      .from('credit_release')
+      .select('purpose')
+      .eq('id', releaseSubmitted)
+      .single();
+    expect(check.data?.purpose).toBe('fixture: submitted');
+  });
+
+  // The positive control for the three refusals that follow: a borrower really
+  // can start a request on their own loan, and really can abandon it.
+  it('is started by the borrower on their own loan, and deleted again', async () => {
+    const created = await insertCreditRelease(clientA, {
+      loan_id: loanA,
+      amount: '1000.00',
+      purpose: 'fixture: probe draft',
+      requested_by: borrowerA.id,
+    });
+    expect(created?.state).toBe('draft');
+    expect(created?.revision).toBe(0);
+
+    const releaseId = created?.id;
+    if (releaseId === undefined) {
+      throw new Error('the probe draft did not come back as inserted');
+    }
+    expect(await deleteCreditReleaseDraft(clientA, releaseId)).toBe(true);
+  });
+
+  it('cannot be started by a borrower against another borrower loan', async () => {
+    const { error } = await clientB.from('credit_release').insert({
+      loan_id: loanA,
+      amount: 1000,
+      purpose: 'fixture: forged',
+      requested_by: borrowerB.id,
+    });
+    expect(error).not.toBeNull();
+  });
+
+  // A lender CAN see the loan, so "a loan the caller can see" would have been
+  // the wrong predicate: the insert check pins it to the caller as the loan's
+  // BORROWER. A lender inserting here would be fabricating a borrower's
+  // request.
+  it('cannot be started by a lender on a borrower loan', async () => {
+    const { error } = await clientLender.from('credit_release').insert({
+      loan_id: loanA,
+      amount: 1000,
+      purpose: 'fixture: fabricated by the lender',
+      requested_by: lender.id,
+    });
+    expect(error).not.toBeNull();
+  });
+
+  it('cannot be attributed by a borrower to another user', async () => {
+    const { error } = await clientA.from('credit_release').insert({
+      loan_id: loanA,
+      amount: 1000,
+      purpose: 'fixture: misattributed',
+      requested_by: borrowerB.id,
+    });
+    expect(error).not.toBeNull();
+  });
+
+  // Abandoning something never submitted is the borrower's to do; a request a
+  // lender has seen is a record, and stays.
+  it('cannot be deleted once it has been submitted', async () => {
+    expect(await deleteCreditReleaseDraft(clientA, releaseSubmitted)).toBe(false);
+
+    const check = await service.from('credit_release').select('id').eq('id', releaseSubmitted);
+    expect(check.data?.length).toBe(1);
+  });
+});
+
+describe('the lender-only note, from the borrower side', () => {
+  // The column-versus-row argument, stated as an assertion. If internal_note
+  // were a column on credit_release this key would be here, because the
+  // borrower's own row policy admits the row whatever a projection omits.
+  it('is not a column on the release the borrower can read', async () => {
+    const { data, error } = await clientA
+      .from('credit_release')
+      .select('*')
+      .eq('id', releaseDeclined)
+      .single();
+    expect(error).toBeNull();
+
+    const row: Record<string, unknown> = data ?? {};
+    expect(Object.keys(row)).not.toContain('internal_note');
+    // The positive control on the same row: the borrower CAN read the reason,
+    // which is the field the lender wrote FOR them. Two fields, one row, two
+    // answers -- which is the whole point.
+    expect(row['decline_reason']).toBe(releaseDeclineReason);
+  });
+
+  it('is not a column on the borrower projection either', async () => {
+    const release = await getCreditReleaseForBorrower(clientA, releaseDeclined);
+    expect(Object.keys(release ?? {})).not.toContain('internal_note');
+    expect(release?.decline_reason).toBe(releaseDeclineReason);
+  });
+
+  // The sharp end: the note is about this borrower, on a release this borrower
+  // owns, and they still cannot reach it.
+  it('reads back as an empty set from credit_release_note', async () => {
+    const rows = readable(
+      await clientA.from('credit_release_note').select('*').eq('release_id', releaseDeclined),
+    );
+    expect(rows).toEqual([]);
+    expect(await getCreditReleaseNote(clientA, releaseDeclined)).toBeNull();
+
+    // The positive control, without which the assertion above would pass
+    // against a note that was never written: the lender reads that exact row,
+    // with that exact text.
+    expect((await getCreditReleaseNote(clientLender, releaseDeclined))?.internal_note).toBe(
+      releaseInternalNote,
+    );
+  });
+
+  it('cannot be written by the borrower it is about', async () => {
+    const inserted = await clientA.from('credit_release_note').insert({
+      release_id: releaseDraft,
+      internal_note: 'written by the borrower',
+      recorded_by: borrowerA.id,
+    });
+    expect(inserted.error).not.toBeNull();
+
+    // No policy admits the row, so this reports success and touches nothing --
+    // the shape a client sees when a denial is a policy rather than a
+    // privilege. The check below is what makes the difference legible.
+    const updated = await clientA
+      .from('credit_release_note')
+      .update({ internal_note: 'rewritten by the borrower' })
+      .eq('release_id', releaseDeclined)
+      .select('release_id');
+    expect(readable(updated)).toEqual([]);
+
+    const check = await service
+      .from('credit_release_note')
+      .select('internal_note')
+      .eq('release_id', releaseDeclined)
+      .single();
+    expect(check.data?.internal_note).toBe(releaseInternalNote);
+  });
+
+  // Under security_invoker the lender projection returns the borrower's own
+  // release with the lender-only half null rather than a permission error. The
+  // row being present is what makes the nulls meaningful.
+  it('comes back null when a borrower reads the lender projection', async () => {
+    const row = await getCreditReleaseForLender(clientA, releaseDeclined);
+    expect(row?.id).toBe(releaseDeclined);
+    expect(row?.decline_reason).toBe(releaseDeclineReason);
+    expect(row?.internal_note).toBeNull();
+    expect(row?.note_recorded_by).toBeNull();
+    // `decided_by` is a column on a base table the borrower's policy admits, so
+    // no view could withhold it and this one does not pretend to. What plan/06
+    // means by "the lender sees who decided" is the NAME, and that is withheld
+    // properly -- by the profile policies, which do not admit a lender's row to
+    // a borrower.
+    expect(row?.decided_by).toBe(lender.id);
+    expect(row?.decided_by_name).toBeNull();
+    // The positive control for that null: the join to `profile` DOES resolve a
+    // name for this caller -- their own -- so the null above is the lender's
+    // profile being withheld and not the join being empty.
+    expect(row?.requested_by_name).not.toBeNull();
+  });
+});
+
+describe('the lender-only note, from the lender side', () => {
+  it('is read through the lender projection, with both names resolved', async () => {
+    const row = await getCreditReleaseForLender(clientLender, releaseDeclined);
+    expect(row?.internal_note).toBe(releaseInternalNote);
+    expect(row?.note_recorded_by).toBe(lender.id);
+    // The name the borrower could not read, read here by the caller entitled
+    // to it. That pairing is the whole of "two roles, two truths" on one row.
+    expect(row?.decided_by_name).toBe('Fixture Lender');
+    expect(row?.requested_by_name).not.toBeNull();
+    expect(row?.borrower_id).toBe(borrowerA.id);
+  });
+
+  // The lender's mid-decision draft, which is plan/06's third refresh case. It
+  // is safe to autosave straight from the browser precisely because a borrower
+  // holds no policy on this table at all.
+  it('is written and amended by the lender, in one upsert either way', async () => {
+    const written = await upsertCreditReleaseNote(clientLender, {
+      release_id: releaseSubmitted,
+      internal_note: 'triage: waiting on the elevator confirmation',
+      recorded_by: lender.id,
+    });
+    expect(written?.internal_note).toBe('triage: waiting on the elevator confirmation');
+
+    const amended = await upsertCreditReleaseNote(clientLender, {
+      release_id: releaseSubmitted,
+      internal_note: 'triage: confirmation received',
+      recorded_by: lender.id,
+    });
+    expect(amended?.internal_note).toBe('triage: confirmation received');
+
+    const rows = await service
+      .from('credit_release_note')
+      .select('release_id')
+      .eq('release_id', releaseSubmitted);
+    expect(rows.data?.length).toBe(1);
+  });
+
+  // recorded_at is stamped by the trigger on insert and on update, so an
+  // amended note cannot keep -- or claim -- the instant of the first draft.
+  it('cannot have its timestamp chosen or backdated by the lender', async () => {
+    const backdated = new Date(Date.now() - 86_400_000).toISOString();
+    const { error } = await clientLender
+      .from('credit_release_note')
+      .update({ recorded_at: backdated })
+      .eq('release_id', releaseDeclined);
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('credit_release_note')
+      .select('recorded_at')
+      .eq('release_id', releaseDeclined)
+      .single();
+    expect(check.data?.recorded_at).not.toBe(backdated);
+  });
+
+  it('cannot be attributed by a lender to a colleague', async () => {
+    const inserted = await clientLender.from('credit_release_note').insert({
+      release_id: releaseDraft,
+      internal_note: 'attributed to somebody else',
+      recorded_by: lenderBeta.id,
+    });
+    expect(inserted.error).not.toBeNull();
+
+    const reattributed = await clientLender
+      .from('credit_release_note')
+      .update({ recorded_by: lenderBeta.id })
+      .eq('release_id', releaseDeclined)
+      .select('release_id');
+    expect(readable(reattributed)).toEqual([]);
+
+    const check = await service
+      .from('credit_release_note')
+      .select('recorded_by')
+      .eq('release_id', releaseDeclined)
+      .single();
+    expect(check.data?.recorded_by).toBe(lender.id);
+  });
+
+  it('is not read or written by a lender at another organisation', async () => {
+    expect(await getCreditReleaseNote(clientLenderBeta, releaseDeclined)).toBeNull();
+
+    const written = await clientLenderBeta
+      .from('credit_release_note')
+      .update({ internal_note: 'written from the other organisation' })
+      .eq('release_id', releaseDeclined)
+      .select('release_id');
+    expect(readable(written)).toEqual([]);
+
+    // The positive control: the beta lender reads their OWN organisation's
+    // note, so the two refusals above are about the policy and not about a
+    // lender who can do nothing at all.
+    expect((await getCreditReleaseNote(clientLenderBeta, releaseOther))?.internal_note).toBe(
+      otherInternalNote,
+    );
+  });
+});
+
+describe('the release timeline', () => {
+  // 0002_rls.sql whitelists `machine = 'application'` on workflow_event and
+  // says each machine's clause is added by the migration that creates its
+  // table. 0007 adds credit_release as a SECOND policy, because migrations are
+  // append-only and permissive policies for one command are OR'd.
+  it('is read by the borrower whose release it records', async () => {
+    const rows = readable(
+      await clientA.from('workflow_event').select('subject_id').eq('machine', 'credit_release'),
+    );
+    expect(rows.map((row) => row.subject_id)).toEqual([releaseSubmitted]);
+  });
+
+  it('is not read by another borrower, who reads their own', async () => {
+    const rows = readable(
+      await clientB.from('workflow_event').select('subject_id').eq('machine', 'credit_release'),
+    );
+    expect(rows.map((row) => row.subject_id)).toEqual([releaseOther]);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    const mine = readable(
+      await clientLender
+        .from('workflow_event')
+        .select('subject_id')
+        .eq('machine', 'credit_release'),
+    );
+    expect(mine.map((row) => row.subject_id)).toContain(releaseSubmitted);
+
+    const theirs = readable(
+      await clientLenderBeta
+        .from('workflow_event')
+        .select('subject_id')
+        .eq('machine', 'credit_release'),
+    );
+    expect(theirs.map((row) => row.subject_id)).not.toContain(releaseSubmitted);
+    expect(theirs.map((row) => row.subject_id)).toContain(releaseOther);
+  });
+
+  it('takes no forged entry from a client', async () => {
+    const { error } = await clientA.from('workflow_event').insert({
+      machine: 'credit_release',
+      subject_id: releaseSubmitted,
+      to_state: 'approved',
+      event: 'approve',
+      actor_id: borrowerA.id,
+      actor_role: 'lender',
+    });
+    expect(error).not.toBeNull();
+  });
+});
+
+describe('the servicing query helpers', () => {
+  it('give the lender a queue of everything still holding credit, oldest first', async () => {
+    const queued = (await listCreditReleaseQueue(clientLender)).map((row) => row.id);
+    expect(queued).toContain(releaseSubmitted);
+    // Settled and unsubmitted requests are not work.
+    expect(queued).not.toContain(releaseDeclined);
+    expect(queued).not.toContain(releaseDraft);
+    // And the queue is the caller's organisation, with no filter written here
+    // to forget.
+    expect(queued).not.toContain(releaseOther);
+
+    const betaQueue = await listCreditReleaseQueue(clientLenderBeta);
+    expect(betaQueue.map((row) => row.id)).toEqual([releaseOther]);
+  });
+
+  it('give the borrower their own loan releases, newest first', async () => {
+    const rows = await listCreditReleasesForBorrower(clientA, loanA);
+    expect(rows.map((row) => row.id).sort()).toEqual(
+      [releaseDraft, releaseSubmitted, releaseDeclined, releaseTransient].sort(),
+    );
+  });
+
+  it('return nothing to a caller no policy admits', async () => {
+    expect(await listCreditReleasesForBorrower(clientB, loanA)).toEqual([]);
+    expect(await getCreditRelease(clientB, releaseSubmitted)).toBeNull();
+    expect(await getLoan(clientB, loanA)).toBeNull();
+    expect(await listLedgerEntries(clientB, loanA)).toEqual([]);
+    expect(await listLoans(clientB)).not.toEqual([]);
+  });
+
+  // The boundary this layer exists to get right. Every money column is selected
+  // as `column::text`, so the exact decimal Postgres rendered is what arrives;
+  // an uncast select would hand back a binary double and look correct doing it.
+  it('carry every money column as exact decimal text', async () => {
+    const loan = await getLoan(clientA, loanA);
+    expect(loan?.approved_limit).toBe(loanApprovedLimit);
+
+    const amounts = (await listLedgerEntries(clientA, loanA)).map((entry) => entry.amount);
+    expect(amounts).toContain(loanDrawAmount);
+    expect(amounts).toContain(loanRepaymentAmount);
+
+    const release = await getCreditRelease(clientA, releaseSubmitted);
+    expect(release?.amount).toBe(releaseSubmittedAmount);
+  });
+});
+
+// Realtime ------------------------------------------------------------------
+//
+// `supabase_realtime` exists in a fresh Supabase database and contains NO
+// TABLES until a migration adds one. `[realtime] enabled = true` in
+// supabase/config.toml, so the service runs, a client subscribes and the
+// subscription reports SUBSCRIBED -- and then nothing is ever delivered.
+// Nothing errors and nothing logs, which is the worst shape a defect can have,
+// because it is indistinguishable from "no changes happened yet".
+//
+// So the probe is functional rather than a check that a statement is present in
+// a file: it subscribes as a real end user and waits for a real change. That is
+// the only assertion that can tell a published table from an unpublished one,
+// and it is the same code path plan/06's two-window demo runs on.
+//
+// These are the last tests in the file on purpose: each one moves a fixture row
+// to generate the change it waits for.
+
+/**
+ * Waits for the row change `column = expected` to arrive over the socket, or
+ * fails with a timeout that names the likely cause.
+ *
+ * It waits for the MATCHING payload rather than for the first one, and that is
+ * not defensive coding. Realtime reads the write-ahead log a beat behind the
+ * writer and fans out to whichever channels are subscribed when it gets there,
+ * so a subscription opened moments after an earlier update to the same row can
+ * legitimately be handed that earlier update first. Resolving on the first
+ * payload made this test fail with the previous value of the column -- which
+ * looks like a broken publication and is not one.
+ */
+async function awaitRowChange(
+  user: TestUser,
+  table: 'credit_release' | 'document_slot',
+  rowId: string,
+  column: string,
+  expected: string,
+  // PromiseLike, not Promise: PostgREST's builder is a thenable that only
+  // issues its request when awaited, and it has no .catch of its own.
+  change: () => PromiseLike<unknown>,
+): Promise<void> {
+  const client = clientAs(user.token);
+  // The socket carries its own credentials: the Authorization header on the
+  // REST client does not reach the websocket, and without this the subscriber
+  // is `anon`, whom no policy admits.
+  await client.realtime.setAuth(user.token);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new Error(
+            `no realtime payload for ${table}.${column} within 15s; is the table ` +
+              'in the supabase_realtime publication? (0007_servicing.sql adds it)',
+          ),
+        );
+      }, 15_000);
+
+      client
+        .channel(`probe-${table}-${rowId}`)
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table, filter: `id=eq.${rowId}` },
+          (payload) => {
+            const row = payload.new as Record<string, unknown>;
+            if (row[column] === expected) {
+              clearTimeout(timer);
+              resolve();
+            }
+          },
+        )
+        .subscribe((status) => {
+          // The change is made only once the subscription is live, otherwise
+          // the test races the socket and fails for the wrong reason.
+          if (status === 'SUBSCRIBED') {
+            void Promise.resolve(change()).catch((error: unknown) => {
+              clearTimeout(timer);
+              reject(error instanceof Error ? error : new Error(String(error)));
+            });
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            clearTimeout(timer);
+            reject(new Error(`realtime subscription for ${table} reported ${status}`));
+          }
+        });
+    });
+  } finally {
+    await client.removeAllChannels();
+  }
+}
+
+describe('the realtime publication', () => {
+  // plan/06 calls the two-window demo "a few lines and the whole demo". Those
+  // few lines are inert unless credit_release is published, and nothing about
+  // an inert subscription looks wrong from the outside: the client connects,
+  // the channel reports SUBSCRIBED, and no row ever arrives.
+  //
+  // Verified to discriminate, not merely to pass: pointed at `application`,
+  // which 0007 deliberately does NOT publish, this same helper times out.
+  it('delivers a credit_release change to the borrower it belongs to', async () => {
+    const moved = 'fixture: transient, seen over realtime';
+    await awaitRowChange(borrowerA, 'credit_release', releaseTransient, 'purpose', moved, () =>
+      service.from('credit_release').update({ purpose: moved }).eq('id', releaseTransient),
+    );
+  }, 30_000);
+
+  // Phase 6 deferred realtime on the document pack for want of a channel
+  // factory. The factory exists now, and the table being published is the other
+  // half of it -- added by 0007 rather than left for whoever picks that up to
+  // rediscover from a screen that silently never updates.
+  it('delivers a document_slot change to the borrower it belongs to', async () => {
+    const moved = 'Land title or lease, seen over realtime';
+    await awaitRowChange(borrowerA, 'document_slot', slotReviewed, 'label', moved, () =>
+      service.from('document_slot').update({ label: moved }).eq('id', slotReviewed),
+    );
+  }, 30_000);
 });
