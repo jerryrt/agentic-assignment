@@ -87,7 +87,6 @@ import {
   type CreditReleaseEvaluation,
 } from '../../lib/credit-release-subject.ts';
 import { resolveRequiredDocs } from '../../lib/document-pack.ts';
-import { resolveLoanTerms, type LoanTerms } from '../../lib/loan-terms.ts';
 import {
   advanceDocumentSlot,
   asDocumentSlotEvent,
@@ -98,6 +97,7 @@ import { prepareUpload, type PreparedUpload } from '../../lib/document-upload.ts
 import { declaresEffect, runEffects, unrunnableEffects } from '../../lib/effects.ts';
 import { readApiEnvironment } from '../../lib/environment.ts';
 import { failure, success, type SubjectSnapshot } from '../../lib/http.ts';
+import { resolveLoanTerms, type LoanTerms } from '../../lib/loan-terms.ts';
 import { anyPermits, transitionsFrom } from '../../lib/machines.ts';
 import { parseTransitionRequest } from '../../lib/request.ts';
 
@@ -152,12 +152,17 @@ async function adjudicate(request: Request): Promise<Response> {
   // made is this code's responsibility.
   const service = createServiceRoleClient(environment.serviceRole);
 
-  // Two subjects, two adjudicators, and no registry over them. They share who
-  // the audience is and how the audit entry is written, and those two are
-  // shared as functions; everything else -- the table, the schema that
-  // validates a row, the guard context, what an effect needs -- differs, and a
-  // generic pipeline with a switch inside every step would read worse than
-  // both of these do (CLAUDE.md section 9).
+  // Three subjects, three adjudicators, and no registry over them. What they
+  // share is shared as functions and imported rather than restated: who the
+  // audience is (`applicationReadableBy`), how an event is narrowed
+  // (`narrowEvent`), how the two structural refusals are answered
+  // (`structuralRefusal`), and how the audit entry is written (`appendEvent`).
+  // Everything else -- the table, the schema that validates a row, the guard
+  // context, what an effect needs, what a decision writes -- differs per
+  // machine, and a generic pipeline with a switch inside every step would read
+  // worse than these three do (CLAUDE.md section 9). The switch below is
+  // exhaustive, so a fourth machine is a compile error rather than a request
+  // quietly adjudicated as an application.
   const adjudication: AdjudicationRequest = {
     actor,
     machine: parsed.machine,
@@ -523,6 +528,8 @@ async function commit(
     slot: null,
     upload: null,
     loanTerms: request.loanTerms,
+    release: null,
+    loan: null,
   });
   if (!effects.ok) {
     return failure(
@@ -706,6 +713,8 @@ async function adjudicateDocumentSlot(
     slot,
     upload,
     loanTerms: null,
+    release: null,
+    loan: null,
   });
   if (!ran.ok) {
     return failure(
@@ -912,6 +921,8 @@ async function adjudicateCreditRelease(
     slot: null,
     upload: null,
     loanTerms: null,
+    release,
+    loan,
   });
   if (!ran.ok) {
     return failure(

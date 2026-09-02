@@ -33,6 +33,7 @@ import { createServiceRoleClient, type ServiceRoleClient } from '@lj/db/service-
 import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { loadCreditRelease, loadLoan } from '../lib/credit-release-subject.ts';
 import { runEffects } from '../lib/effects.ts';
 import { POST as CORRECTION } from '../src/routes/documents-correction.ts';
 import { POST as DOWNLOAD_URL } from '../src/routes/documents-download-url.ts';
@@ -789,6 +790,25 @@ async function readBalance(loanId: string): Promise<BalanceFixtureRow> {
   return data as unknown as BalanceFixtureRow;
 }
 
+interface LedgerFixtureRow {
+  readonly kind: string;
+  readonly amount: string;
+  readonly effective: string;
+  readonly release_id: string | null;
+}
+
+/** One loan's ledger, amounts as the exact decimal Postgres rendered. */
+async function readLedgerEntries(loanId: string): Promise<readonly LedgerFixtureRow[]> {
+  const { data, error } = await service
+    .from('ledger_entry')
+    .select('kind, amount::text, effective, release_id')
+    .eq('loan_id', loanId);
+  if (error !== null) {
+    throw new Error(`could not read the ledger of ${loanId}: ${error.message}`);
+  }
+  return (data ?? []) as unknown as readonly LedgerFixtureRow[];
+}
+
 async function releaseEventCount(releaseId: string): Promise<number> {
   return (await listWorkflowEvents(service, 'credit_release', releaseId)).length;
 }
@@ -933,6 +953,12 @@ let releaseForeign: string;
 let appDisburseLoan: string;
 let loanForDisburse: string;
 let releaseToDisburse: string;
+/** A draft on the same facility, submitted after the money moves. */
+let releaseProbeAfterDisburse: string;
+/** Its own facility, so the stale-revision case cannot disturb the balance above. */
+let appStaleDisburseLoan: string;
+let loanForStaleDisburse: string;
+let releaseStaleDisburse: string;
 
 const SUBMITTED_REVISION = 3;
 const DOCS_PENDING_REVISION = 4;
@@ -1250,8 +1276,15 @@ beforeAll(async () => {
     }),
   ]);
 
-  const [submitLoan, tooLargeLoan, decideLoan, closedLoan, foreignLoan, disburseLoan] =
-    await Promise.all([
+  const [
+    submitLoan,
+    tooLargeLoan,
+    decideLoan,
+    closedLoan,
+    foreignLoan,
+    disburseLoan,
+    staleDisburseLoan,
+  ] = await Promise.all([
       insertFundedLoan({
         borrowerId: borrower.id,
         orgId: orgAlpha,
@@ -1295,6 +1328,13 @@ beforeAll(async () => {
         approvedLimit: '250000.00',
         drawn: '10000.00',
       }),
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '10000.00',
+      }),
     ]);
   ({ applicationId: appSubmitLoan, loanId: loanForSubmit } = submitLoan);
   ({ applicationId: appTooLargeLoan, loanId: loanForTooLarge } = tooLargeLoan);
@@ -1302,6 +1342,7 @@ beforeAll(async () => {
   ({ applicationId: appClosedLoan, loanId: loanClosed } = closedLoan);
   ({ applicationId: appForeignLoan, loanId: loanForeign } = foreignLoan);
   ({ applicationId: appDisburseLoan, loanId: loanForDisburse } = disburseLoan);
+  ({ applicationId: appStaleDisburseLoan, loanId: loanForStaleDisburse } = staleDisburseLoan);
 
   [
     releaseWithinAvailable,
@@ -1315,6 +1356,8 @@ beforeAll(async () => {
     releaseToCancel,
     releaseForeign,
     releaseToDisburse,
+    releaseProbeAfterDisburse,
+    releaseStaleDisburse,
   ] = await Promise.all([
     insertRelease({
       loanId: loanForSubmit,
@@ -1380,6 +1423,20 @@ beforeAll(async () => {
     insertRelease({
       loanId: loanForDisburse,
       amount: '25000.00',
+      state: 'approved',
+      requestedBy: borrower.id,
+    }),
+    // A cent more than the facility will have available once the 25000.00
+    // above has been disbursed: 250000.00 - 35000.00 - 0.00 = 215000.00.
+    insertRelease({
+      loanId: loanForDisburse,
+      amount: '215000.01',
+      state: 'draft',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForStaleDisburse,
+      amount: '5000.00',
       state: 'approved',
       requestedBy: borrower.id,
     }),
@@ -1457,6 +1514,7 @@ afterAll(async () => {
       appClosedLoan,
       appForeignLoan,
       appDisburseLoan,
+      appStaleDisburseLoan,
     ]);
   // document_slot and document_upload rows go with their application, by the
   // cascades in 0006_documents.sql.
@@ -1892,6 +1950,8 @@ describe('requesting documents generates the pack', () => {
       slot: null,
       upload: null,
       loanTerms: null,
+      release: null,
+      loan: null,
     });
 
     expect(outcome.ok).toBe(true);
@@ -3187,7 +3247,23 @@ describe('adjudicating a credit release', () => {
     expect((await readRelease(releaseToCancel)).state).toBe('cancelled');
   });
 
-  it('refuses to disburse while nothing can post the ledger entry', async () => {
+});
+
+// Disbursing is the moment money moves, and plan/06 states the invariant it has
+// to hold: "a funded release with no ledger entry, or a draw with no release,
+// must be unrepresentable". Half of that is a UNIQUE constraint on
+// ledger_entry.release_id, so a retried disbursement is refused by the database
+// rather than by this code remembering to look first.
+describe('disbursing a credit release', () => {
+  it('posts exactly one signed ledger entry, and moves the right balance', async () => {
+    const before = await readBalance(loanForDisburse);
+    expect(before).toEqual({
+      approved_limit: '250000.00',
+      outstanding: '10000.00',
+      pending: '25000.00',
+      available: '215000.00',
+    });
+
     const answer = await post(lender.token, {
       machine: 'credit_release',
       subjectId: releaseToDisburse,
@@ -3195,11 +3271,119 @@ describe('adjudicating a credit release', () => {
       expectedRevision: 0,
     });
 
-    expect(answer.status).toBe(501);
-    expect(answer.payload['code']).toBe('effect_not_implemented');
-    expect(String(answer.payload['reason'])).toContain('post_ledger_entry');
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('funded');
+    expect(answer.payload['effects']).toEqual(['post_ledger_entry']);
 
-    expect((await readRelease(releaseToDisburse)).state).toBe('approved');
-    expect(await releaseEventCount(releaseToDisburse)).toBe(0);
+    const entries = await readLedgerEntries(loanForDisburse);
+    const posted = entries.filter((entry) => entry.release_id === releaseToDisburse);
+    expect(posted).toHaveLength(1);
+    // Signed, and positive: a draw raises what is outstanding, which is what
+    // lets the balance be a plain sum rather than a case over `kind`.
+    expect(posted[0]?.kind).toBe('draw');
+    expect(posted[0]?.amount).toBe('25000.00');
+
+    /**
+     * The two truths, one row apart.
+     *
+     * The borrower's available credit does NOT move: the money was already
+     * spoken for as `pending` and has merely changed from committed to drawn.
+     * The lender's undrawn limit -- `approved_limit - outstanding` -- does. If
+     * the borrower's figure had moved here, the release would have been
+     * counted twice: once as pending and again on the ledger.
+     */
+    const after = await readBalance(loanForDisburse);
+    expect(after.outstanding).toBe('35000.00');
+    // '0' and not '0.00': with nothing pending the sum is null and the view's
+    // `coalesce(..., 0)` supplies an untyped integer literal, so Postgres
+    // renders no scale. @lj/domain's money parser reads either, which is why
+    // this is a note rather than a defect -- but a caller comparing these as
+    // STRINGS would be wrong here and nowhere else.
+    expect(after.pending).toBe('0');
+    expect(after.available).toBe('215000.00');
+  });
+
+  /**
+   * The whole coherence claim, checked on the far side of a disbursement.
+   *
+   * The blocker carries the cap the guard applied, and it is compared against
+   * `loan_balance_v.available` read straight from the database. The probe asks
+   * for exactly one cent more than the view says is there, so the two figures
+   * cannot agree by accident.
+   */
+  it('guards the next request with the balance the disbursement produced', async () => {
+    const balance = await readBalance(loanForDisburse);
+    expect(balance.available).toBe('215000.00');
+
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseProbeAfterDisburse,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    const blocker = blockerById(answer, 'release_within_available');
+    expect(blocker.inputs['maximum']).toBe(Number(balance.available.replace('.', '')));
+    expect(blocker.delta?.shortfall).toBe(1);
+  });
+
+  /**
+   * The half of plan/06's invariant that is a constraint rather than a
+   * sequence: a doubled disbursement must be unrepresentable.
+   *
+   * The endpoint cannot reach this -- nothing leaves `funded` on `disburse`, so
+   * a retried request is refused by the machine one step earlier. The runner is
+   * therefore called directly, which is the only way to prove that the refusal
+   * comes from the UNIQUE constraint on `ledger_entry.release_id` and not from
+   * this code remembering to look first. A check-then-insert would be a race,
+   * and the balance it produced would be one nobody could explain.
+   */
+  it('is refused by the database if one release is disbursed twice', async () => {
+    const release = await loadCreditRelease(service, releaseToDisburse);
+    const loan = await loadLoan(service, loanForDisburse);
+    expect(release).not.toBeNull();
+    expect(loan).not.toBeNull();
+    if (release === null || loan === null) {
+      return;
+    }
+
+    const outcome = await runEffects(service, [{ kind: 'post_ledger_entry' }], {
+      applicationId: appDisburseLoan,
+      revision: 1,
+      eligibility: [],
+      requiredDocs: [],
+      slot: null,
+      upload: null,
+      loanTerms: null,
+      release,
+      loan,
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.ok === false && outcome.kind).toBe('post_ledger_entry');
+
+    const posted = (await readLedgerEntries(loanForDisburse)).filter(
+      (entry) => entry.release_id === releaseToDisburse,
+    );
+    expect(posted).toHaveLength(1);
+  });
+
+  it('writes no ledger entry when the release moved under the caller', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseStaleDisburse,
+      event: 'disburse',
+      expectedRevision: 9,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('revision_conflict');
+
+    // The state change is the serialisation point and it comes first, so a
+    // stale revision reaches no effect at all.
+    expect(await readLedgerEntries(loanForStaleDisburse)).toHaveLength(1);
+    expect((await readRelease(releaseStaleDisburse)).state).toBe('approved');
+    expect(await releaseEventCount(releaseStaleDisburse)).toBe(0);
   });
 });
