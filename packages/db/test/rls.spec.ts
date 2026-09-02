@@ -28,6 +28,10 @@ import {
   getApplicationDecision,
   recordApplicationDecision,
 } from '../src/queries/application-decisions.ts';
+import {
+  insertEligibilitySnapshot,
+  listEligibilitySnapshots,
+} from '../src/queries/eligibility-snapshots.ts';
 
 type Client = SupabaseClient<Database>;
 
@@ -168,12 +172,40 @@ let appReviewed: string; // borrower A, org alpha, has an application_decision r
 let appQueued: string; // borrower A, org alpha, under review, not yet decided
 let appOther: string; // borrower B, org beta
 let eventId: number; // the log row for appReviewed
+let snapshotReviewed: string; // the eligibility snapshot taken for appReviewed
+let snapshotOther: string; // borrower B's snapshot, at the other organisation
 
 // The note recorded against appReviewed. Assertions name the literal rather
 // than "some non-null string", because a leak has to be legible: a probe that
 // only checked the column was populated would pass on an empty one.
 const decisionNote = 'internal: thin file, second opinion requested';
 const riskGrade = 'B';
+
+// The snapshot taken when appReviewed was submitted. It quotes the borrower's
+// own position back at them -- their acreage, their coverage ratio -- so it is
+// as confidential as the application it belongs to, and the assertions below
+// name this literal for the same reason the decision note is named: a probe
+// that only checked "some jsonb came back" would pass on an empty row.
+const snapshotProductName = 'Operating line, as evaluated at submit';
+const snapshotEligibility = [
+  {
+    productId: 'fixture-product',
+    productName: snapshotProductName,
+    status: 'pass',
+    results: [
+      {
+        id: 'dscr_floor',
+        label: 'Debt service coverage',
+        status: 'pass',
+        severity: 'error',
+        explain: 'Coverage is 1.42, above the 1.25 this product asks for.',
+        inputs: { actual: 14_200, required: 12_500 },
+        missing: [],
+        delta: null,
+      },
+    ],
+  },
+];
 
 async function insertReturningId(
   table: 'organisation' | 'loan_product',
@@ -315,6 +347,33 @@ beforeAll(async () => {
     throw new Error(`fixture workflow_event failed: ${event.error?.message ?? 'no row'}`);
   }
   eventId = event.data.id;
+
+  // One snapshot per borrower, so "reads their own" and "reads nobody else's"
+  // are both assertions about a row that exists rather than about an empty
+  // table. Written with the service role because no client holds INSERT on this
+  // table at all -- which is itself probed below.
+  const snapshots = await service
+    .from('eligibility_snapshot')
+    .insert([
+      { application_id: appReviewed, revision: 1, eligibility: snapshotEligibility },
+      { application_id: appOther, revision: 1, eligibility: [] },
+    ])
+    .select('id, application_id');
+  if (snapshots.error !== null || snapshots.data === null) {
+    throw new Error(
+      `fixture eligibility_snapshot failed: ${snapshots.error?.message ?? 'no rows'}`,
+    );
+  }
+  const insertedSnapshots = snapshots.data;
+  const snapshotFor = (applicationId: string): string => {
+    const row = insertedSnapshots.find((s) => s.application_id === applicationId);
+    if (row === undefined) {
+      throw new Error(`fixture snapshot for ${applicationId} did not come back as inserted`);
+    }
+    return row.id;
+  };
+  snapshotReviewed = snapshotFor(appReviewed);
+  snapshotOther = snapshotFor(appOther);
 }, 60_000);
 
 afterAll(async () => {
@@ -337,6 +396,12 @@ afterAll(async () => {
   // 0001_init.sql -- which is why there is no delete for them here. No client
   // holds DELETE on that table at all, so a teardown that removed them
   // directly would be exercising a path production does not have.
+  //
+  // eligibility_snapshot rows go the same way, by the cascade in
+  // 0005_application_submit.sql. There DELETE is withheld from service_role
+  // too, so the cascade is not a convenience here but the only route: a
+  // referential action runs as the owner of the referencing table and is not
+  // subject to the deleting role's privileges on it.
   await service
     .from('application')
     .delete()
@@ -375,6 +440,10 @@ describe('anonymous callers', () => {
 
   it('reads no workflow events', async () => {
     expect(readable(await anon.from('workflow_event').select('id'))).toEqual([]);
+  });
+
+  it('reads no eligibility snapshots', async () => {
+    expect(readable(await anon.from('eligibility_snapshot').select('id'))).toEqual([]);
   });
 
   it('reads no organisations and no loan products', async () => {
@@ -793,6 +862,131 @@ describe('the workflow event log is append only', () => {
       actor_role: 'lender',
     });
     expect(error).not.toBeNull();
+  });
+});
+
+// The snapshot inherits the application's audience rather than declaring its
+// own, exactly as the workflow log does: one definition of who may read a loan
+// file, and both enforcement points move together when it changes. These
+// assertions are what make that inheritance a fact instead of a claim.
+describe('the eligibility snapshot', () => {
+  it('is read by the borrower the application belongs to', async () => {
+    const { data, error } = await clientA
+      .from('eligibility_snapshot')
+      .select('*')
+      .eq('id', snapshotReviewed)
+      .single();
+    expect(error).toBeNull();
+    expect(data?.application_id).toBe(appReviewed);
+    expect(JSON.stringify(data?.eligibility)).toContain(snapshotProductName);
+  });
+
+  it('is not read by another borrower', async () => {
+    const rows = readable(await clientB.from('eligibility_snapshot').select('id'));
+    expect(rows.map((row) => row.id)).not.toContain(snapshotReviewed);
+    // The positive half: borrower B does hold a snapshot, so the assertion
+    // above is filtering rather than an empty table or a missing privilege.
+    expect(rows.map((row) => row.id)).toContain(snapshotOther);
+  });
+
+  it('is read by a lender at the organisation the application was sent to', async () => {
+    const { data, error } = await clientLender
+      .from('eligibility_snapshot')
+      .select('*')
+      .eq('id', snapshotReviewed)
+      .single();
+    expect(error).toBeNull();
+    expect(JSON.stringify(data?.eligibility)).toContain(snapshotProductName);
+  });
+
+  it('is not read by a lender at another organisation', async () => {
+    const rows = readable(await clientLenderBeta.from('eligibility_snapshot').select('id'));
+    expect(rows.map((row) => row.id)).not.toContain(snapshotReviewed);
+    expect(rows.map((row) => row.id)).toContain(snapshotOther);
+  });
+
+  it('cannot be written by the borrower it is about', async () => {
+    // No client holds INSERT on this table, so this is a privilege refusal
+    // rather than a policy one. A borrower who could write a snapshot could
+    // quote a product's criteria back at a lender as though the product had
+    // said them.
+    const { error } = await clientA.from('eligibility_snapshot').insert({
+      application_id: appDraft,
+      revision: 0,
+      eligibility: [],
+    });
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('eligibility_snapshot')
+      .select('id')
+      .eq('application_id', appDraft);
+    expect(check.data ?? []).toEqual([]);
+  });
+
+  it('cannot be rewritten by the lender reading it', async () => {
+    const { error } = await clientLender
+      .from('eligibility_snapshot')
+      .update({ eligibility: [] })
+      .eq('id', snapshotReviewed);
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('eligibility_snapshot')
+      .select('eligibility')
+      .eq('id', snapshotReviewed)
+      .single();
+    expect(JSON.stringify(check.data?.eligibility)).toContain(snapshotProductName);
+  });
+
+  it('cannot be deleted by a client, and goes only with its application', async () => {
+    const { error } = await clientA.from('eligibility_snapshot').delete().eq('id', snapshotReviewed);
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('eligibility_snapshot')
+      .select('id')
+      .eq('id', snapshotReviewed);
+    expect(check.data?.length).toBe(1);
+  });
+});
+
+describe('the eligibility snapshot query helpers', () => {
+  it('write one snapshot and read it back in order', async () => {
+    // Written with the service role because that is the only writer there is:
+    // the API takes the snapshot inside the submit transition. A second
+    // snapshot at a later revision is what a resubmission would leave, and the
+    // list is oldest first so the newest is the last element.
+    const written = await insertEligibilitySnapshot(service, {
+      applicationId: appQueued,
+      revision: 7,
+      eligibility: snapshotEligibility,
+    });
+    expect(written?.application_id).toBe(appQueued);
+    expect(written?.revision).toBe(7);
+
+    const rows = await listEligibilitySnapshots(clientA, appQueued);
+    expect(rows.map((row) => row.revision)).toEqual([7]);
+  });
+
+  it('return nothing to a caller no policy admits', async () => {
+    // Borrower B may not see appQueued, so they may not see what it was told
+    // either. An empty list rather than an error, and the same answer as "this
+    // application has never been submitted" -- deliberately indistinguishable.
+    expect(await listEligibilitySnapshots(clientB, appQueued)).toEqual([]);
+  });
+
+  it('refuse a second snapshot at a revision already snapshotted', async () => {
+    // One row per submit, made structural. Without the constraint a retried
+    // write would quietly leave two rows saying the same thing, and "what was
+    // the borrower told when they submitted" would have two answers.
+    await expect(
+      insertEligibilitySnapshot(service, {
+        applicationId: appQueued,
+        revision: 7,
+        eligibility: [],
+      }),
+    ).rejects.toThrow();
   });
 });
 

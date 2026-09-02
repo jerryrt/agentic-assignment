@@ -94,21 +94,21 @@ export type Database = {
       application_decision: {
         Row: {
           application_id: string
-          decided_by: string | null
+          decided_by: string
           decision_note: string | null
           recorded_at: string
           risk_grade: string | null
         }
         Insert: {
           application_id: string
-          decided_by?: string | null
+          decided_by: string
           decision_note?: string | null
           recorded_at?: string
           risk_grade?: string | null
         }
         Update: {
           application_id?: string
-          decided_by?: string | null
+          decided_by?: string
           decision_note?: string | null
           recorded_at?: string
           risk_grade?: string | null
@@ -140,6 +140,52 @@ export type Database = {
             columns: ["decided_by"]
             isOneToOne: false
             referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      eligibility_snapshot: {
+        Row: {
+          application_id: string
+          created_at: string
+          eligibility: Json
+          id: string
+          revision: number
+        }
+        Insert: {
+          application_id: string
+          created_at?: string
+          eligibility: Json
+          id?: string
+          revision: number
+        }
+        Update: {
+          application_id?: string
+          created_at?: string
+          eligibility?: Json
+          id?: string
+          revision?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "eligibility_snapshot_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "eligibility_snapshot_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application_borrower_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "eligibility_snapshot_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application_lender_v"
             referencedColumns: ["id"]
           },
         ]

@@ -56,6 +56,8 @@ export const TRANSITION_FAILURE_CODES = [
   'transition_rejected_by_database',
   /** The state moved but the audit entry did not land. Always loud. */
   'event_log_write_failed',
+  /** The state moved but a declared effect did not. Equally loud, and named. */
+  'effect_write_failed',
   'internal_error',
 ] as const;
 
