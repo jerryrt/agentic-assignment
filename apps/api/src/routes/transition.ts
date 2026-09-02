@@ -78,7 +78,6 @@ import { resolveRequiredDocs } from '../../lib/document-pack.ts';
 import {
   advanceDocumentSlot,
   asDocumentSlotEvent,
-  documentSlotEffects,
   loadDocumentSlot,
   NO_DOCUMENT_SLOT_CRITERIA,
 } from '../../lib/document-slot-subject.ts';
@@ -552,12 +551,12 @@ async function adjudicateDocumentSlot(
     });
   }
 
-  // What this transition does besides moving the state. Declared effects win;
-  // `documentSlotEffects` is the temporary home for the extraction until
-  // machines/document-slot.ts declares it -- see the note on `extract_document`
-  // in packages/workflow/src/types.ts.
-  const effects =
-    outcome.effects.length > 0 ? outcome.effects : documentSlotEffects(narrowed);
+  // What this transition does besides moving the state, read off the machine
+  // definition and nowhere else. It briefly had a second home in the delivery
+  // layer, because the slot machine's file was outside the scope that needed
+  // the effect; two places deciding which transitions have effects is the same
+  // duplication as two places deciding which transitions are legal.
+  const effects = outcome.effects;
 
   const unrunnable = unrunnableEffects(effects);
   if (unrunnable.length > 0) {

@@ -9,7 +9,7 @@ import {
 } from '@lj/domain';
 import type { AppRole } from '@lj/domain';
 
-import { apply, can } from '../src/index.ts';
+import { apply, can, transitionRows } from '../src/index.ts';
 import {
   applicationMachine,
   creditReleaseMachine,
@@ -230,5 +230,58 @@ describe('declared effects', () => {
     const outcome = apply(applicationMachine, 'under_review', 'approve', 'lender', APPLICATION_CONTEXT);
 
     expect(outcome.ok === true && outcome.effects).toEqual([]);
+  });
+});
+
+/**
+ * Which transitions carry an effect is part of the machine definition, and this
+ * says so where the definition lives.
+ *
+ * It was briefly decided in the delivery layer instead -- the scope that needed
+ * `extract_document` did not own this file, so apps/api carried a function
+ * mapping events to effects beside the machine that should have declared them.
+ * Two places deciding which transitions have effects is the same duplication as
+ * two places deciding which transitions are legal, and it fails the same way:
+ * silently, when one is edited.
+ */
+describe('the effects a transition declares', () => {
+  const effectsOf = (machine: typeof documentSlotMachine, event: string): readonly string[] =>
+    machine.transitions
+      .filter((transition) => transition.event === event)
+      .flatMap((transition) => transition.effects.map((effect) => effect.kind));
+
+  it('extracts a document when a file arrives, and only then', () => {
+    expect(effectsOf(documentSlotMachine, 'upload')).toEqual(['extract_document']);
+    expect(effectsOf(documentSlotMachine, 'replace')).toEqual(['extract_document']);
+  });
+
+  // accept, reject and extract are decisions about a document that has already
+  // been read, so there is nothing for an extractor to do.
+  it('declares nothing on a decision about a document already read', () => {
+    for (const event of ['extract', 'accept', 'reject']) {
+      expect(effectsOf(documentSlotMachine, event)).toEqual([]);
+    }
+  });
+
+  // Adding an effect must not move the generated SQL, and the reason is worth
+  // stating precisely because it is easy to state wrongly. It is NOT that the
+  // generator's view of a transition lacks an `effects` key -- MachineShape is
+  // a structural subset, so the runtime object carries every field the full
+  // definition does. It is that `transitionRows` reads four of them and emits
+  // four columns. That is what this asserts, and `pnpm workflow:check` is the
+  // other half: the committed migration is unchanged.
+  it('does not reach the rows the code generator emits', () => {
+    const rows = transitionRows(documentSlotMachine);
+    const uploaded = rows.filter((row) => row.event === 'upload');
+    expect(uploaded.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual([
+        'actor_role',
+        'event',
+        'from_state',
+        'machine',
+        'to_state',
+      ]);
+    }
   });
 });
