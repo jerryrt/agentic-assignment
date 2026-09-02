@@ -110,3 +110,35 @@ here or set them independently in CI.
 
 One trap worth repeating because it is silent: npm's `latest` TypeScript is a major release that
 Angular 22 refuses (`"typescript": ">=6.0 <6.1"`). Pin `6.0.3` exactly.
+
+### Four traps that cost real time, in the order they bite
+
+Each of these was found by something failing in a way that named the wrong cause. They are written
+here rather than left in issue threads because every one of them will be met again.
+
+**The Node version manager does not fire in a non-interactive shell.** `.node-version` pins
+24.20.0, and the `fnm` hook that reads it sits in `~/.bashrc` *after* the guard that returns early
+when the shell is not interactive. So an interactive prompt gets 24.20.0 and any scripted command
+gets the machine's global Node, silently. Prefix commands that matter:
+
+```bash
+fnm exec -- pnpm turbo run test        # reads .node-version
+node -v                                # may be a different major entirely
+```
+
+**A relative import inside a package names a `.ts` file.** Packages are consumed as TypeScript
+source, so `./thing.js` describes a file that does not exist and Node refuses it at load. This is
+recorded in `../plan/01-architecture.md`; it cost three deploys to establish, because the compiler
+is content with a specifier it will never emit.
+
+**A serverless function must not import a workspace package.** Vercel's zero-config builder
+transpiles the entry and leaves imports to resolve on the server, where a pnpm-symlinked package
+is simply absent. `apps/api` therefore bundles its handlers -- see `../plan/01-architecture.md`.
+The failure is a 500 with no application log, because nothing ran.
+
+**Local auth and hosted auth differ.** `supabase/config.toml` sets
+`enable_confirmations = false`, so a local signup logs straight in. The hosted project confirms
+addresses and has no mail service, so the same signup succeeds and can never authenticate -- and
+the login is refused with `invalid_credentials` rather than anything about confirmation, which is
+deliberate on Supabase's part and unhelpful on ours. The demo accounts exist for this reason; see
+`04-demo-accounts.md`.
