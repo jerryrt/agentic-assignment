@@ -1,0 +1,49 @@
+/*
+ * The layout shared by the four steps.
+ *
+ * A file rather than four inline copies, and layout only -- every colour is a
+ * token, every spacing a step on the 4px scale from design/00-foundations.md.
+ * This is the placeholder for Tailwind's layout utilities that
+ * apps/web/src/styles.scss describes; it must not grow into a rival design
+ * system.
+ */
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.step__heading {
+  margin: 0;
+  font-size: 24px;
+  line-height: 32px;
+}
+
+.step__lead {
+  margin: 0;
+  color: var(--lj-muted);
+}
+
+.step__grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.step__wide {
+  grid-column: 1 / -1;
+}
+
+.step__section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.step__section-heading {
+  margin: 0 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
