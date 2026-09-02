@@ -144,6 +144,114 @@ export type Database = {
           },
         ]
       }
+      document_slot: {
+        Row: {
+          application_id: string
+          code: string
+          created_at: string
+          extract_required: string[]
+          id: string
+          label: string
+          required: boolean
+          revision: number
+          state: string
+          updated_at: string
+          valid_until: string | null
+        }
+        Insert: {
+          application_id: string
+          code: string
+          created_at?: string
+          extract_required?: string[]
+          id?: string
+          label: string
+          required?: boolean
+          revision?: number
+          state?: string
+          updated_at?: string
+          valid_until?: string | null
+        }
+        Update: {
+          application_id?: string
+          code?: string
+          created_at?: string
+          extract_required?: string[]
+          id?: string
+          label?: string
+          required?: boolean
+          revision?: number
+          state?: string
+          updated_at?: string
+          valid_until?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_slot_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_slot_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application_borrower_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_slot_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application_lender_v"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      document_upload: {
+        Row: {
+          bytes: number
+          extracted: Json | null
+          extraction_state: string
+          filename: string
+          id: string
+          mime: string
+          slot_id: string
+          storage_path: string
+          uploaded_at: string
+        }
+        Insert: {
+          bytes: number
+          extracted?: Json | null
+          extraction_state?: string
+          filename: string
+          id?: string
+          mime: string
+          slot_id: string
+          storage_path: string
+          uploaded_at?: string
+        }
+        Update: {
+          bytes?: number
+          extracted?: Json | null
+          extraction_state?: string
+          filename?: string
+          id?: string
+          mime?: string
+          slot_id?: string
+          storage_path?: string
+          uploaded_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_upload_slot_id_fkey"
+            columns: ["slot_id"]
+            isOneToOne: false
+            referencedRelation: "document_slot"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       eligibility_snapshot: {
         Row: {
           application_id: string
@@ -422,6 +530,7 @@ export type Database = {
           decision_note: string | null
           furthest_step: string | null
           id: string | null
+          open_doc_count: number | null
           org_id: string | null
           recorded_at: string | null
           revision: number | null
