@@ -72,7 +72,7 @@ describe('the borrower figure and the guard', () => {
   });
 
   it('shows the lender undrawn limit, which is larger by exactly the pending column', () => {
-    const lender = lenderFigures(facts());
+    const lender = lenderFigures(balance());
     const borrower = borrowerFigures(facts());
 
     expect(lender.undrawn).toBe(moneyFromNumericString('121557.53'));
@@ -138,7 +138,7 @@ describe('the borrower figure and the guard', () => {
     });
 
     expect(borrowerFigures(overdrawn).available).toBe(0);
-    expect(lenderFigures(overdrawn).undrawn).toBe(moneyFromNumericString('-10000.00'));
+    expect(lenderFigures(overdrawn.balance).undrawn).toBe(moneyFromNumericString('-10000.00'));
   });
 
   /**

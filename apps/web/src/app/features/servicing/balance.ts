@@ -115,12 +115,18 @@ export function borrowerFigures(facts: LoanFacts, excludeReleaseId?: string | nu
   };
 }
 
-export function lenderFigures(facts: LoanFacts): LenderFigures {
+/**
+ * Takes the balance row alone, not the whole file: the lender's reading needs
+ * no release list, because pending is a column of the view rather than
+ * something recomputed. That is what lets the queue read a hundred loans'
+ * figures from one round trip.
+ */
+export function lenderFigures(balance: LoanBalance): LenderFigures {
   return {
-    limit: facts.balance.approved_limit,
-    outstanding: facts.balance.outstanding,
-    atRisk: facts.balance.pending,
-    undrawn: lenderUndrawnLimit(facts.balance),
+    limit: balance.approved_limit,
+    outstanding: balance.outstanding,
+    atRisk: balance.pending,
+    undrawn: lenderUndrawnLimit(balance),
   };
 }
 
