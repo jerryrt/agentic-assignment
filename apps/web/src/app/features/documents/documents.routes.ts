@@ -1,5 +1,6 @@
 import type { Routes } from '@angular/router';
 
+import { roleGuard } from '../../core/auth/auth.guards.ts';
 import { DocumentPackStore } from './document-pack.store.ts';
 
 /**
@@ -30,6 +31,21 @@ export const DOCUMENTS_ROUTES: Routes = [
         pathMatch: 'full',
         title: 'Your documents',
         loadComponent: () => import('./pack.page.ts').then((m) => m.DocumentPackPage),
+      },
+      /**
+       * The lender's review of the same pack.
+       *
+       * `roleGuard` shapes navigation only. What actually keeps a borrower out
+       * is that `accept` and `reject` are lender-only on the machine and
+       * POST /api/transition re-checks the actor's role server-side; the guard
+       * is here so a borrower who follows the URL is told, rather than shown
+       * two buttons that will be refused.
+       */
+      {
+        path: 'review',
+        title: 'Document review',
+        canActivate: [roleGuard('lender', 'admin')],
+        loadComponent: () => import('./review.page.ts').then((m) => m.DocumentReviewPage),
       },
     ],
   },
