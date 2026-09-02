@@ -172,6 +172,17 @@ let appReviewed: string; // borrower A, org alpha, has an application_decision r
 let appQueued: string; // borrower A, org alpha, under review, not yet decided
 let appOther: string; // borrower B, org beta
 let eventId: number; // the log row for appReviewed
+let slotReviewed: string; // a required slot on appReviewed, borrower A
+let slotOther: string; // a required slot on appOther, borrower B
+let uploadReviewed: string; // the file submitted against slotReviewed
+/**
+ * A real object in the private bucket, so the storage assertions are about a
+ * policy refusing rather than about a file that is not there. The path is the
+ * convention 0006_documents.sql fixes and its policy reads --
+ * <application_id>/<slot_code>/<uuid>.<ext> -- written out rather than
+ * assembled, so a change to the convention breaks this visibly.
+ */
+let storedObject: string;
 let snapshotReviewed: string; // the eligibility snapshot taken for appReviewed
 let snapshotOther: string; // borrower B's snapshot, at the other organisation
 
@@ -374,6 +385,79 @@ beforeAll(async () => {
   };
   snapshotReviewed = snapshotFor(appReviewed);
   snapshotOther = snapshotFor(appOther);
+
+  // One document slot per borrower, for the same reason as the snapshots: so
+  // "reads their own" and "reads nobody else's" are both assertions about rows
+  // that exist. Written with the service role because `authenticated` holds
+  // SELECT and nothing else on either table -- which is itself probed below.
+  const slots = await service
+    .from('document_slot')
+    .insert([
+      {
+        application_id: appReviewed,
+        code: 'land_title',
+        label: 'Land title or lease',
+        required: true,
+        extract_required: ['legal_description'],
+      },
+      {
+        application_id: appOther,
+        code: 'land_title',
+        label: 'Land title or lease',
+        required: true,
+        extract_required: ['legal_description'],
+      },
+    ])
+    .select('id, application_id');
+  if (slots.error !== null || slots.data === null) {
+    throw new Error(`fixture document_slot failed: ${slots.error?.message ?? 'no rows'}`);
+  }
+  const insertedSlots = slots.data;
+  const slotFor = (applicationId: string): string => {
+    const row = insertedSlots.find((slot) => slot.application_id === applicationId);
+    if (row === undefined) {
+      throw new Error(`fixture slot for ${applicationId} did not come back as inserted`);
+    }
+    return row.id;
+  };
+  slotReviewed = slotFor(appReviewed);
+  slotOther = slotFor(appOther);
+  storedObject = `${appReviewed}/land_title/00000000-0000-4000-8000-00000000bb01.pdf`;
+
+  // The path convention 0006_documents.sql fixes, and the storage policy reads:
+  // <application_id>/<slot_code>/<uuid>.<ext>. It is written out here rather
+  // than assembled from a helper so that a change to the convention breaks this
+  // fixture visibly.
+  const upload = await service
+    .from('document_upload')
+    .insert({
+      slot_id: slotReviewed,
+      storage_path: `${appReviewed}/land_title/00000000-0000-4000-8000-00000000aa01.pdf`,
+      filename: 'land-title.pdf',
+      bytes: 12_345,
+      mime: 'application/pdf',
+    })
+    .select('id')
+    .single();
+  if (upload.error !== null || upload.data === null) {
+    throw new Error(`fixture document_upload failed: ${upload.error?.message ?? 'no row'}`);
+  }
+  uploadReviewed = upload.data.id;
+
+  // A real object in the private bucket, put there with the service role. It
+  // matters that this exists: without it, every "cannot read another
+  // borrower's file" assertion below would pass because the file is absent
+  // rather than because the policy refused it, which is a test that proves
+  // nothing and looks like it proves everything.
+  const stored = await service.storage
+    .from('documents')
+    .upload(storedObject, new Blob(['%PDF-1.4 land title'], { type: 'application/pdf' }), {
+      contentType: 'application/pdf',
+      upsert: true,
+    });
+  if (stored.error !== null) {
+    throw new Error(`fixture storage object failed: ${stored.error.message}`);
+  }
 }, 60_000);
 
 afterAll(async () => {
@@ -869,6 +953,216 @@ describe('the workflow event log is append only', () => {
 // own, exactly as the workflow log does: one definition of who may read a loan
 // file, and both enforcement points move together when it changes. These
 // assertions are what make that inheritance a fact instead of a claim.
+describe('the document pack', () => {
+  it('is read by the borrower the application belongs to', async () => {
+    const { data, error } = await clientA
+      .from('document_slot')
+      .select('*')
+      .eq('id', slotReviewed)
+      .single();
+    expect(error).toBeNull();
+    expect(data?.code).toBe('land_title');
+  });
+
+  it('is not read by another borrower', async () => {
+    const rows = readable(await clientB.from('document_slot').select('id'));
+    expect(rows.map((row) => row.id)).not.toContain(slotReviewed);
+    // The positive half: borrower B holds a slot of their own, so the assertion
+    // above is filtering rather than an empty table or a missing privilege.
+    expect(rows.map((row) => row.id)).toContain(slotOther);
+  });
+
+  it('is read by a lender at the organisation the application was sent to', async () => {
+    const { data, error } = await clientLender
+      .from('document_slot')
+      .select('*')
+      .eq('id', slotReviewed)
+      .single();
+    expect(error).toBeNull();
+    expect(data?.label).toBe('Land title or lease');
+  });
+
+  it('is not read by a lender at another organisation', async () => {
+    const rows = readable(await clientLenderBeta.from('document_slot').select('id'));
+    expect(rows.map((row) => row.id)).not.toContain(slotReviewed);
+    expect(rows.map((row) => row.id)).toContain(slotOther);
+  });
+
+  it('is read by nobody anonymous', async () => {
+    expect(readable(await anon.from('document_slot').select('id'))).toEqual([]);
+    expect(readable(await anon.from('document_upload').select('id'))).toEqual([]);
+  });
+
+  // The one that matters most. A borrower who could write `state` could accept
+  // their own documents, and `accept` is a lender's decision -- so this is a
+  // privilege refusal rather than a policy one, exactly as application.state is.
+  it('cannot have its state written by the borrower it belongs to', async () => {
+    const { error } = await clientA
+      .from('document_slot')
+      .update({ state: 'accepted' })
+      .eq('id', slotReviewed);
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('document_slot')
+      .select('state')
+      .eq('id', slotReviewed)
+      .single();
+    expect(check.data?.state).toBe('required');
+  });
+
+  // Nor by the lender who is entitled to decide it. Accepting a document is a
+  // transition, and a transition goes through the API, which re-checks the
+  // role against the machine and appends an event. A direct write would move
+  // the state with no audit entry behind it.
+  it('cannot have its state written by the lender either', async () => {
+    const { error } = await clientLender
+      .from('document_slot')
+      .update({ state: 'accepted' })
+      .eq('id', slotReviewed);
+    expect(error).not.toBeNull();
+  });
+
+  it('cannot have a slot invented by a client', async () => {
+    const { error } = await clientA.from('document_slot').insert({
+      application_id: appDraft,
+      code: 'invented',
+      label: 'Invented',
+    });
+    expect(error).not.toBeNull();
+
+    const check = await service
+      .from('document_slot')
+      .select('id')
+      .eq('application_id', appDraft);
+    expect(check.data ?? []).toEqual([]);
+  });
+});
+
+describe('a submitted document', () => {
+  it('is read by the borrower who submitted it', async () => {
+    const { data, error } = await clientA
+      .from('document_upload')
+      .select('*')
+      .eq('id', uploadReviewed)
+      .single();
+    expect(error).toBeNull();
+    expect(data?.filename).toBe('land-title.pdf');
+  });
+
+  it('is not read by another borrower', async () => {
+    const rows = readable(await clientB.from('document_upload').select('id'));
+    expect(rows.map((row) => row.id)).not.toContain(uploadReviewed);
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    const mine = readable(await clientLender.from('document_upload').select('id'));
+    expect(mine.map((row) => row.id)).toContain(uploadReviewed);
+
+    const theirs = readable(await clientLenderBeta.from('document_upload').select('id'));
+    expect(theirs.map((row) => row.id)).not.toContain(uploadReviewed);
+  });
+
+  // No client holds INSERT. The row is written by the API on the `upload`
+  // transition, from a path the API minted -- a client-supplied path is a
+  // client choosing which application's folder to write into.
+  it('cannot be recorded by a client', async () => {
+    const { error } = await clientA.from('document_upload').insert({
+      slot_id: slotReviewed,
+      storage_path: `${appOther}/land_title/forged.pdf`,
+      filename: 'forged.pdf',
+      bytes: 1,
+      mime: 'application/pdf',
+    });
+    expect(error).not.toBeNull();
+  });
+
+  // Append-only, and meant literally: no UPDATE and no DELETE for anyone,
+  // service_role included. A record of what was submitted that can be edited to
+  // agree with what happened afterwards is not a record.
+  it('cannot be rewritten or removed, by a client or by the service role', async () => {
+    expect(
+      (await clientA.from('document_upload').update({ filename: 'x.pdf' }).eq('id', uploadReviewed))
+        .error,
+    ).not.toBeNull();
+    expect(
+      (await service.from('document_upload').update({ filename: 'x.pdf' }).eq('id', uploadReviewed))
+        .error,
+    ).not.toBeNull();
+    expect(
+      (await service.from('document_upload').delete().eq('id', uploadReviewed)).error,
+    ).not.toBeNull();
+
+    const check = await service
+      .from('document_upload')
+      .select('filename')
+      .eq('id', uploadReviewed)
+      .single();
+    expect(check.data?.filename).toBe('land-title.pdf');
+  });
+});
+
+describe('the documents bucket', () => {
+  const objectUnder = (applicationId: string): string =>
+    `${applicationId}/land_title/00000000-0000-4000-8000-00000000bb01.pdf`;
+
+  // The bucket is private. A public one serves every object to anyone holding
+  // the URL, and a loan file's documents are the last thing that should be one
+  // guessed path away from the internet.
+  it('is private', async () => {
+    const { data } = await service.storage.getBucket('documents');
+    expect(data?.public).toBe(false);
+  });
+
+  // THE POSITIVE CONTROL, and the reason the three refusals below mean
+  // anything: the object is really there and really readable by the borrower
+  // whose application it is filed under. Without this, "cannot read" would pass
+  // for a file that does not exist.
+  it('is read by the borrower whose application it is filed under', async () => {
+    const { data, error } = await clientA.storage.from('documents').download(storedObject);
+    expect(error).toBeNull();
+    expect(await data?.text()).toContain('land title');
+  });
+
+  it('is read by a lender at the organisation, and not by one elsewhere', async () => {
+    expect((await clientLender.storage.from('documents').download(storedObject)).error).toBeNull();
+    expect(
+      (await clientLenderBeta.storage.from('documents').download(storedObject)).error,
+    ).not.toBeNull();
+  });
+
+  it('is not read by anyone anonymous', async () => {
+    const { error } = await anon.storage.from('documents').download(storedObject);
+    expect(error).not.toBeNull();
+  });
+
+  // The read policy gates on the FIRST PATH SEGMENT as the application id, so
+  // borrower B cannot reach an object filed under borrower A's application
+  // however the rest of the path is spelled.
+  it('is not read by a borrower it is not filed under', async () => {
+    const { error } = await clientB.storage.from('documents').download(storedObject);
+    expect(error).not.toBeNull();
+  });
+
+  // No client holds an insert policy on storage.objects for this bucket:
+  // uploads arrive on a signed URL the API mints, so the API stays the only
+  // thing that decides a path may be written. Borrower A is refused even under
+  // their OWN application, which is what makes the signed URL the sole route.
+  it('refuses a direct upload, even from the borrower it would belong to', async () => {
+    const { error } = await clientA.storage
+      .from('documents')
+      .upload(objectUnder(appReviewed) + '.direct', new Blob(['nope']));
+    expect(error).not.toBeNull();
+  });
+
+  it('refuses a borrower writing under another application entirely', async () => {
+    const { error } = await clientB.storage
+      .from('documents')
+      .upload(objectUnder(appReviewed) + '.forged', new Blob(['nope']));
+    expect(error).not.toBeNull();
+  });
+});
+
 describe('the eligibility snapshot', () => {
   it('is read by the borrower the application belongs to', async () => {
     const { data, error } = await clientA

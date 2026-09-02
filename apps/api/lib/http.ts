@@ -1,5 +1,5 @@
 /**
- * One response shape for every way this endpoint can answer.
+ * One response shape for every way this API can answer.
  *
  * A caller renders a refusal through the same code path whatever caused it, so
  * every failure carries the same four fields and only the values differ:
@@ -17,12 +17,16 @@
  * means refetch and retry, a 422 means show the blockers, a 403 means the
  * button should not have been there. `reason` is for a person reading a log or
  * a developer console; it is never the thing a client switches on.
+ *
+ * Shared by every route rather than one shape per route. A browser that renders
+ * one refusal renders all of them, and a second shape would be a second
+ * renderer for the same three fields.
  */
 
 import type { RuleResult } from '@lj/domain';
 
 /**
- * Every way a transition request can fail, named once.
+ * Every way a request to this API can fail, named once.
  *
  * The list is deliberately finer than the three branches of the sequence
  * diagram in plan/03. That diagram draws the happy path and the two refusals
@@ -31,7 +35,7 @@ import type { RuleResult } from '@lj/domain';
  * would tell a caller their data was wrong when the truth is that they may not
  * do this at all.
  */
-export const TRANSITION_FAILURE_CODES = [
+export const API_FAILURE_CODES = [
   /** The body did not parse, or named a machine or event that does not exist. */
   'invalid_request',
   /** No bearer token, or one the auth server does not recognise. */
@@ -50,6 +54,12 @@ export const TRANSITION_FAILURE_CODES = [
   'guard_refused',
   /** The transition declares an effect this API cannot yet carry out. */
   'effect_not_implemented',
+  /**
+   * The effect has a runner, but the data it would write cannot be assembled --
+   * a product whose document pack does not parse, an upload with no file behind
+   * it. Refused before the state change, like an effect with no runner at all.
+   */
+  'effect_input_invalid',
   /** The subject moved under the caller: the two-tabs case. */
   'revision_conflict',
   /** The database trigger rejected a move the machine believes is legal. */
@@ -58,10 +68,16 @@ export const TRANSITION_FAILURE_CODES = [
   'event_log_write_failed',
   /** The state moved but a declared effect did not. Equally loud, and named. */
   'effect_write_failed',
+  /** A file larger than the policy allows. The bytes are never spent. */
+  'upload_too_large',
+  /** A file of a type the bucket does not hold. */
+  'upload_type_not_accepted',
+  /** Storage answered with something other than a URL. Never absorbed. */
+  'storage_unavailable',
   'internal_error',
 ] as const;
 
-export type TransitionFailureCode = (typeof TRANSITION_FAILURE_CODES)[number];
+export type ApiFailureCode = (typeof API_FAILURE_CODES)[number];
 
 /** What the caller must reconcile against when it has lost a race. */
 export interface SubjectSnapshot {
@@ -91,7 +107,7 @@ function json(status: number, payload: Record<string, unknown>): Response {
 
 export function failure(
   status: number,
-  code: TransitionFailureCode,
+  code: ApiFailureCode,
   reason: string,
   detail: FailureDetail = NOTHING_TO_ADD,
 ): Response {

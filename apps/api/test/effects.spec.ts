@@ -6,11 +6,50 @@
 // schema -- a mock of the snapshot write would agree with whatever this code
 // believes, which is the one thing that must not be assumed.
 
+import { applicationMachine, apply } from '@lj/workflow';
 import { describe, expect, it } from 'vitest';
 
-import { RUNNABLE_EFFECT_KINDS, unrunnableEffects } from '../lib/effects.ts';
+import { declaresEffect, RUNNABLE_EFFECT_KINDS, unrunnableEffects } from '../lib/effects.ts';
+
+/** No guard on `request_docs`, so an empty context is the whole context. */
+const NO_RULES_EVALUATED = { completeness: [], eligibility: [], documentPack: [] };
+
+// The machine definition is data, so what a transition declares is testable
+// without a database. That matters most for the two effects whose absence would
+// be silent: an application at `docs_pending` with no checklist, and a `funded`
+// application with no loan.
+describe('what the application machine declares', () => {
+  it('creates the document slots when a lender asks for documents', () => {
+    const outcome = apply(
+      applicationMachine,
+      'submitted',
+      'request_docs',
+      'lender',
+      NO_RULES_EVALUATED,
+    );
+
+    expect(outcome.ok === true && outcome.effects).toEqual([
+      { kind: 'create_document_slots' },
+    ]);
+  });
+});
 
 describe('the effects this API can run', () => {
+  it('generates the document pack the request_docs transition declares', () => {
+    expect(RUNNABLE_EFFECT_KINDS.has('create_document_slots')).toBe(true);
+    expect(unrunnableEffects([{ kind: 'create_document_slots' }])).toEqual([]);
+  });
+
+  it('answers whether a transition declares one particular effect', () => {
+    expect(declaresEffect([{ kind: 'create_document_slots' }], 'create_document_slots')).toBe(
+      true,
+    );
+    expect(declaresEffect([{ kind: 'write_eligibility_snapshot' }], 'create_document_slots')).toBe(
+      false,
+    );
+    expect(declaresEffect([], 'create_document_slots')).toBe(false);
+  });
+
   it('runs the eligibility snapshot the submit transition declares', () => {
     expect(RUNNABLE_EFFECT_KINDS.has('write_eligibility_snapshot')).toBe(true);
     expect(unrunnableEffects([{ kind: 'write_eligibility_snapshot' }])).toEqual([]);

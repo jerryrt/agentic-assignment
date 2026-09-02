@@ -23,6 +23,10 @@ describe('applicationTransitionNeedsEvaluation', () => {
   // declares one needs it even with no guard of its own.
   it('evaluates for a transition that declares an effect', () => {
     expect(applicationTransitionNeedsEvaluation('approved', 'fund')).toBe(true);
+    // `request_docs` has no guard and reads no criteria, but its effect
+    // generates the checklist from the product the payload names -- so the
+    // payload has to be parsed before the transition can be allowed.
+    expect(applicationTransitionNeedsEvaluation('submitted', 'request_docs')).toBe(true);
   });
 
   // The case this function exists for. Refusing `withdraw` because the payload
@@ -37,7 +41,6 @@ describe('applicationTransitionNeedsEvaluation', () => {
     expect(applicationTransitionNeedsEvaluation('under_review', 'decline')).toBe(false);
     expect(applicationTransitionNeedsEvaluation('under_review', 'request_info')).toBe(false);
     expect(applicationTransitionNeedsEvaluation('needs_borrower_action', 'resubmit')).toBe(false);
-    expect(applicationTransitionNeedsEvaluation('submitted', 'request_docs')).toBe(false);
   });
 
   // A pair the machine does not declare needs nothing, and is refused earlier

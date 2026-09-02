@@ -34,6 +34,8 @@ export * from './eligibility/criteria.ts';
 export * from './eligibility/rules.ts';
 
 export * from './documents/context.ts';
+export * from './documents/extracted.ts';
+export * from './documents/required-docs.ts';
 export * from './documents/entity-name.ts';
 export * from './documents/completeness.ts';
 export * from './documents/consistency.ts';

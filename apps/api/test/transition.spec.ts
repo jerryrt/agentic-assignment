@@ -1,4 +1,4 @@
-// The transition endpoint, probed against a real database.
+// The endpoints, probed against a real database.
 //
 // Every assertion below runs the exported handler exactly as the Vercel runtime
 // does -- hand it a `Request`, inspect the `Response` -- against the local
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   createAnonClient,
+  insertDocumentUpload,
   listEligibilitySnapshots,
   listWorkflowEvents,
   type EligibilitySnapshot,
@@ -32,9 +33,16 @@ import { createServiceRoleClient, type ServiceRoleClient } from '@lj/db/service-
 import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { runEffects } from '../lib/effects.ts';
+import { POST as CORRECTION } from '../src/routes/documents-correction.ts';
+import { POST as DOWNLOAD_URL } from '../src/routes/documents-download-url.ts';
+import { POST as UPLOAD_URL } from '../src/routes/documents-upload-url.ts';
 import { POST } from '../src/routes/transition.ts';
 
 const TRANSITION_URL = 'https://lj-api.example/api/transition';
+const UPLOAD_URL_URL = 'https://lj-api.example/api/documents/upload-url';
+const DOWNLOAD_URL_URL = 'https://lj-api.example/api/documents/download-url';
+const CORRECTION_URL = 'https://lj-api.example/api/documents/correction';
 
 // `supabase status` resolves supabase/config.toml relative to its working
 // directory, and vitest runs with the package directory as cwd.
@@ -101,6 +109,25 @@ async function post(token: string | null, body: unknown): Promise<Answer> {
     payload: (parsed ?? {}) as Record<string, unknown>,
     raw,
   };
+}
+
+/** The document routes answer in the same shape, so one caller serves both. */
+async function postTo(
+  handler: (request: Request) => Promise<Response>,
+  url: string,
+  token: string | null,
+  body: unknown,
+): Promise<Answer> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (token !== null) {
+    headers['authorization'] = `Bearer ${token}`;
+  }
+  const response = await handler(
+    new Request(url, { method: 'POST', headers, body: JSON.stringify(body) }),
+  );
+  const raw = await response.text();
+  const parsed: unknown = raw === '' ? {} : JSON.parse(raw);
+  return { status: response.status, payload: (parsed ?? {}) as Record<string, unknown>, raw };
 }
 
 function blockersOf(answer: Answer): unknown[] {
@@ -195,6 +222,40 @@ async function insertApplication(values: {
 }
 
 /**
+ * The pack this product asks for, and the four ways a slot can stand.
+ *
+ * Modelled on the Equipment Term Loan in 0004_demo_data.sql. The four codes are
+ * chosen so one pack can express every failure the completeness rules
+ * distinguish -- missing, stale, unreadable -- alongside a slot that is simply
+ * finished, because the borrower's next action differs in each case and a test
+ * that only proved "not complete" would not prove the difference.
+ */
+const PROBE_PACK: Json = {
+  version: 1,
+  slots: [
+    {
+      code: 'land_title',
+      label: 'Land title or lease',
+      required: true,
+      extract_required: ['total_acres', 'owner_name'],
+    },
+    {
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      required: true,
+      extract_required: ['valid_until'],
+    },
+    {
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      required: true,
+      extract_required: ['net_farm_income'],
+    },
+    { code: 'id_verification', label: 'Photo identification', required: true },
+  ],
+};
+
+/**
  * A product the complete payload below actually qualifies for.
  *
  * Modelled on the Equipment Term Loan in 0004_demo_data.sql rather than
@@ -239,6 +300,35 @@ async function insertLoanProduct(orgId: string): Promise<string> {
           },
         ],
       },
+      required_docs: PROBE_PACK,
+      active: true,
+    })
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture loan_product failed: ${error?.message ?? 'no row'}`);
+  }
+  return data.id;
+}
+
+/**
+ * A product whose document pack cannot be read.
+ *
+ * An empty `slots` array is refused by parseRequiredDocs rather than read as
+ * "this product asks for nothing", because a product whose pack is complete
+ * before anybody uploads anything is a policy nobody has stated. Named to sort
+ * after PRODUCT_NAME so that the eligibility evaluation, which orders by name,
+ * still reports the probe product first.
+ */
+async function insertUnreadablePackProduct(orgId: string): Promise<string> {
+  const { data, error } = await service
+    .from('loan_product')
+    .insert({
+      org_id: orgId,
+      name: UNREADABLE_PACK_PRODUCT_NAME,
+      min_amount: 10_000.0,
+      max_amount: 250_000.0,
+      criteria: { version: 1, rules: [] },
       required_docs: { version: 1, slots: [] },
       active: true,
     })
@@ -248,6 +338,291 @@ async function insertLoanProduct(orgId: string): Promise<string> {
     throw new Error(`fixture loan_product failed: ${error?.message ?? 'no row'}`);
   }
   return data.id;
+}
+
+/**
+ * A slot written straight into the state a case needs.
+ *
+ * Inserted at its final state rather than walked there, which is the pattern
+ * 0004_demo_data.sql uses and for the same reason: the BEFORE UPDATE trigger
+ * reads `workflow_transition`, so walking a fixture through the machine makes
+ * every case depend on the machine it is meant to be testing. An INSERT is not
+ * a transition and the trigger does not fire on one.
+ */
+async function insertSlot(values: {
+  applicationId: string;
+  code: string;
+  label: string;
+  state: string;
+  required?: boolean;
+  extractRequired?: string[];
+  validUntil?: string | null;
+}): Promise<string> {
+  const { data, error } = await service
+    .from('document_slot')
+    .insert({
+      application_id: values.applicationId,
+      code: values.code,
+      label: values.label,
+      state: values.state,
+      required: values.required ?? true,
+      extract_required: values.extractRequired ?? [],
+      valid_until: values.validUntil ?? null,
+    })
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture document_slot failed: ${error?.message ?? 'no row'}`);
+  }
+  return data.id;
+}
+
+async function readSlot(slotId: string): Promise<{ state: string; revision: number }> {
+  const { data, error } = await service
+    .from('document_slot')
+    .select('state, revision')
+    .eq('id', slotId)
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`could not read slot ${slotId}: ${error?.message ?? 'no row'}`);
+  }
+  return { state: data.state, revision: data.revision };
+}
+
+/**
+ * A file recorded against a slot, with an extraction written by hand.
+ *
+ * The values are the input to the completeness rules, so they are stated here
+ * rather than produced by an upload: what is under test is the verdict, and
+ * driving four uploads through storage to reach it would make these cases
+ * depend on the extractor as well.
+ */
+async function insertUpload(values: {
+  slotId: string;
+  filename: string;
+  extracted: Json;
+}): Promise<string> {
+  const row = await insertDocumentUpload(service, {
+    slot_id: values.slotId,
+    storage_path: `fixture/${values.slotId}/${values.filename}`,
+    filename: values.filename,
+    bytes: 4,
+    mime: 'application/pdf',
+    extracted: values.extracted,
+    extraction_state: 'extracted',
+  });
+  if (row === null) {
+    throw new Error('fixture document_upload failed');
+  }
+  return row.id;
+}
+
+/** A machine reading the rules will trust: above the floor, and from the ocr. */
+function readable(value: Json): Json {
+  return { value, confidence_basis_points: 9_200, source: 'ocr' };
+}
+
+/**
+ * Missing, stale and unreadable, in one pack, plus a slot that is finished.
+ *
+ * The three are kept apart because the borrower's next action differs in each
+ * case -- upload something, upload a newer one, upload a clearer scan -- and
+ * collapsing them into one red dot is the version plan/04 calls lazy.
+ */
+async function buildIncompletePack(): Promise<void> {
+  const [, stale, unreadable] = await Promise.all([
+    // FINISHED: accepted, no expiry, both required fields read.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'accepted',
+      extractRequired: ['total_acres', 'owner_name'],
+    }),
+    // STALE: accepted, and expired years ago.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      state: 'accepted',
+      extractRequired: ['valid_until'],
+      validUntil: '2020-01-31',
+    }),
+    // UNREADABLE: accepted, but the figure came back below the floor.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      state: 'accepted',
+      extractRequired: ['net_farm_income'],
+    }),
+    // MISSING: nothing uploaded at all.
+    insertSlot({
+      applicationId: appPackIncomplete,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'required',
+    }),
+  ]);
+
+  const finished = (await readSlotsWithIds(appPackIncomplete)).find(
+    (slot) => slot.code === 'land_title',
+  );
+  await Promise.all([
+    insertUpload({
+      slotId: finished?.id ?? '',
+      filename: 'deed_1240ac_smith-farms.pdf',
+      extracted: { total_acres: readable(1240), owner_name: readable('Smith Farms') },
+    }),
+    insertUpload({
+      slotId: stale ?? '',
+      filename: 'crop_insurance_2020-01-31.pdf',
+      extracted: { valid_until: readable('2020-01-31') },
+    }),
+    insertUpload({
+      slotId: unreadable ?? '',
+      filename: 'scan0003.pdf',
+      // Below EXTRACTION_CONFIDENCE_FLOOR_BASIS_POINTS, so the rules read it as
+      // not read at all -- which is what "could not read" means.
+      extracted: {
+        net_farm_income: { value: 18_420_000, confidence_basis_points: 4_100, source: 'ocr' },
+      },
+    }),
+  ]);
+}
+
+async function buildCompletePack(): Promise<void> {
+  const [title, identity] = await Promise.all([
+    insertSlot({
+      applicationId: appPackComplete,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'accepted',
+      extractRequired: ['total_acres'],
+    }),
+    insertSlot({
+      applicationId: appPackComplete,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'accepted',
+      extractRequired: [],
+      validUntil: '2099-12-31',
+    }),
+  ]);
+
+  await Promise.all([
+    insertUpload({
+      slotId: title ?? '',
+      filename: 'deed_980ac_fenwick-grain.pdf',
+      extracted: { total_acres: readable(980) },
+    }),
+    insertUpload({
+      slotId: identity ?? '',
+      filename: 'id_2099-12-31.pdf',
+      extracted: { valid_until: readable('2099-12-31') },
+    }),
+  ]);
+}
+
+async function readSlotsWithIds(
+  applicationId: string,
+): Promise<{ id: string; code: string }[]> {
+  const { data, error } = await service
+    .from('document_slot')
+    .select('id, code')
+    .eq('application_id', applicationId);
+  if (error !== null || data === null) {
+    throw new Error(`could not read slots of ${applicationId}: ${error?.message ?? 'none'}`);
+  }
+  return data;
+}
+
+async function readUploads(slotId: string): Promise<
+  {
+    id: string;
+    storage_path: string;
+    filename: string;
+    mime: string;
+    bytes: number;
+    extraction_state: string;
+    extracted: Json;
+  }[]
+> {
+  const { data, error } = await service
+    .from('document_upload')
+    .select('id, storage_path, filename, mime, bytes, extraction_state, extracted')
+    .eq('slot_id', slotId)
+    .order('uploaded_at', { ascending: false });
+  if (error !== null || data === null) {
+    throw new Error(`could not read uploads of ${slotId}: ${error?.message ?? 'no rows'}`);
+  }
+  return data;
+}
+
+function extractedField(
+  row: { extracted: Json },
+  field: string,
+): { value: unknown; confidence_basis_points: number; source: string } | undefined {
+  const extracted = row.extracted as Record<string, unknown> | null;
+  const value = extracted?.[field];
+  return value as
+    | { value: unknown; confidence_basis_points: number; source: string }
+    | undefined;
+}
+
+/**
+ * The whole round trip a browser makes: ask for somewhere to put the file, PUT
+ * the bytes straight to storage on the signed url, and fire the transition.
+ *
+ * The bytes go through an ANON client, because that is what the browser has.
+ * The API never sees them.
+ */
+async function uploadFile(
+  token: string,
+  slotId: string,
+  filename: string,
+): Promise<{ path: string; issued: Answer }> {
+  const issued = await postTo(UPLOAD_URL, UPLOAD_URL_URL, token, {
+    slotId,
+    filename,
+    mime: 'application/pdf',
+    bytes: 4,
+  });
+  if (issued.status !== 200) {
+    throw new Error(`upload url refused: ${issued.raw}`);
+  }
+  const path = String(issued.payload['path']);
+  const anon = createAnonClient({ url: stack.url, anonKey: stack.anonKey });
+  const { error } = await anon.storage
+    .from('documents')
+    .uploadToSignedUrl(path, String(issued.payload['token']), new Blob([new Uint8Array([37, 80, 68, 70])], { type: 'application/pdf' }), {
+      contentType: 'application/pdf',
+    });
+  if (error !== null) {
+    throw new Error(`uploadToSignedUrl failed: ${error.message}`);
+  }
+  storedObjects.push(path);
+  return { path, issued };
+}
+
+async function slotEventCount(slotId: string): Promise<number> {
+  return (await listWorkflowEvents(service, 'document_slot', slotId)).length;
+}
+
+/** The pack one application actually holds, in the order it is rendered. */
+async function readSlots(applicationId: string): Promise<
+  { code: string; label: string; required: boolean; state: string; extract_required: string[] }[]
+> {
+  const { data, error } = await service
+    .from('document_slot')
+    .select('code, label, required, state, extract_required')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: true })
+    .order('code', { ascending: true });
+  if (error !== null || data === null) {
+    throw new Error(`could not read slots of ${applicationId}: ${error?.message ?? 'no rows'}`);
+  }
+  return data;
 }
 
 async function readApplication(
@@ -312,14 +687,42 @@ let appStale: string;
 let appCorrupt: string;
 let appCorruptToWithdraw: string;
 
+/** submitted, org alpha. The pack generation case; this one is mutated. */
+let appForPack: string;
+/** docs_pending, org alpha. Slots written straight into `extracted`. */
+let appForDecision: string;
+let slotToAccept: string;
+let slotToReject: string;
+let slotUntouched: string;
+/** extracted, so no file may be added while the lender is deciding. */
+let slotAwaitingDecision: string;
+/** docs_pending, org alpha. The end-to-end upload; its bucket folder is used. */
+let appForUpload: string;
+let slotForFullRead: string;
+let slotForPartialRead: string;
+let slotWithNoFile: string;
+/** docs_pending, org alpha, a pack failing in all three distinct ways. */
+let appPackIncomplete: string;
+/** docs_pending, org alpha, every required slot accepted and valid. */
+let appPackComplete: string;
+/** docs_pending, org alpha, with no slots at all. */
+let appPackEmpty: string;
+/** Every object this run put in the bucket, removed in afterAll. */
+const storedObjects: string[] = [];
+/** submitted, org alpha, naming a product whose document pack does not parse. */
+let appUnreadablePack: string;
+
 let productAlpha: string;
+let productUnreadablePack: string;
 
 const SUBMITTED_REVISION = 3;
+const DOCS_PENDING_REVISION = 4;
 
 const PRODUCT_NAME = 'Api Probe Equipment Term Loan';
+const UNREADABLE_PACK_PRODUCT_NAME = 'Zz Api Probe Unreadable Pack';
 
 /**
- * A payload with every required field answered, on every step.
+ * A payload with every required field answered, on every step, for one product.
  *
  * Copied from the shape packages/domain declares rather than invented, and
  * chosen so the figures clear the product above: coverage is 1.597 against a
@@ -327,7 +730,8 @@ const PRODUCT_NAME = 'Api Probe Equipment Term Loan';
  * the footprint. The point of the case is a submit that succeeds, so every
  * criterion has to pass for a reason that is legible here.
  */
-const COMPLETE_PAYLOAD: Json = {
+function completePayload(productId: string): Json {
+  return {
   borrower: {
     entity_type: 'sole_trader',
     legal_name: 'Beau Marchand',
@@ -354,13 +758,18 @@ const COMPLETE_PAYLOAD: Json = {
     current_liabilities_minor: 9_500_000,
   },
   request: {
-    product_id: '00000000-0000-4000-8000-0000000000b2',
+    // The product is a fixture id rather than a constant, because
+    // `request_docs` now reads the pack off the product this names. A payload
+    // pointing at a product that does not exist would refuse the transition
+    // for a reason that has nothing to do with what each case is about.
+    product_id: productId,
     amount_requested_minor: 9_500_000,
     term_months: 60,
     purpose: 'Replace a 1998 combine ahead of harvest',
     collateral_value_minor: 12_500_000,
   },
-};
+  };
+}
 
 /**
  * A payload the schema rejects outright.
@@ -406,7 +815,10 @@ beforeAll(async () => {
     promoteToLender(foreignLender, orgBeta),
   ]);
 
-  productAlpha = await insertLoanProduct(orgAlpha);
+  [productAlpha, productUnreadablePack] = await Promise.all([
+    insertLoanProduct(orgAlpha),
+    insertUnreadablePackProduct(orgAlpha),
+  ]);
 
   [
     appForSuccess,
@@ -419,24 +831,38 @@ beforeAll(async () => {
     appStale,
     appCorrupt,
     appCorruptToWithdraw,
+    appUnreadablePack,
+    appForPack,
+    appForDecision,
+    appForUpload,
+    appPackIncomplete,
+    appPackComplete,
+    appPackEmpty,
   ] = await Promise.all([
+      // Every application that reaches `submitted` carries the payload that
+      // took it there: `request_docs` reads the pack off the product the
+      // payload names, so a submitted row with an empty payload is one no
+      // borrower could have produced.
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'submitted',
         revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'submitted',
         revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'submitted',
         revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
@@ -461,14 +887,14 @@ beforeAll(async () => {
         orgId: orgAlpha,
         state: 'draft',
         revision: 0,
-        data: COMPLETE_PAYLOAD,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'draft',
         revision: 2,
-        data: COMPLETE_PAYLOAD,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
@@ -486,7 +912,112 @@ beforeAll(async () => {
         revision: 0,
         data: CORRUPT_PAYLOAD,
       }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'submitted',
+        revision: SUBMITTED_REVISION,
+        data: completePayload(productUnreadablePack),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'submitted',
+        revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
     ]);
+
+  // A pack that fails in all three distinct ways at once, plus one slot that is
+  // simply finished. Written straight into their final states, because what is
+  // under test is the evaluation and not the walk that produced it.
+  await buildIncompletePack();
+  await buildCompletePack();
+
+  [slotToAccept, slotToReject, slotUntouched, slotAwaitingDecision] = await Promise.all([
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'extracted',
+    }),
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      state: 'extracted',
+    }),
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'required',
+    }),
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      state: 'extracted',
+    }),
+  ]);
+
+  [slotForFullRead, slotForPartialRead, slotWithNoFile] = await Promise.all([
+    insertSlot({
+      applicationId: appForUpload,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'required',
+      extractRequired: ['total_acres', 'owner_name'],
+    }),
+    insertSlot({
+      applicationId: appForUpload,
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      state: 'required',
+      extractRequired: ['net_farm_income'],
+    }),
+    insertSlot({
+      applicationId: appForUpload,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'required',
+    }),
+  ]);
 }, 60_000);
 
 afterAll(async () => {
@@ -517,13 +1048,27 @@ afterAll(async () => {
       appStale,
       appCorrupt,
       appCorruptToWithdraw,
+      appUnreadablePack,
+      appForPack,
+      appForDecision,
+      appForUpload,
+      appPackIncomplete,
+      appPackComplete,
+      appPackEmpty,
     ]);
-  await service.from('loan_product').delete().eq('id', productAlpha);
+  // document_slot and document_upload rows go with their application, by the
+  // cascades in 0006_documents.sql.
+  await service.from('loan_product').delete().in('id', [productAlpha, productUnreadablePack]);
   await service
     .from('profile')
     .update({ org_id: null })
     .in('id', [lender.id, foreignLender.id]);
   await service.from('organisation').delete().in('id', [orgAlpha, orgBeta]);
+  // Objects outlive their rows: deleting an application cascades to
+  // document_upload but says nothing about the bucket.
+  if (storedObjects.length > 0) {
+    await service.storage.from('documents').remove(storedObjects);
+  }
 }, 60_000);
 
 // Assertions ---------------------------------------------------------------
@@ -851,25 +1396,134 @@ describe('a legal transition', () => {
 
   /**
    * An unevaluated rule set is a refusal, not a pass (see the handoff on #9).
-   * `document_slot` has no table yet, so nothing can evaluate the document
-   * pack, and `begin_review` must therefore refuse -- with a reason that says
-   * the criteria were not evaluated rather than that they were not met.
+   * An application at `docs_pending` with NO slots evaluates to an empty set,
+   * and requireRules reads that as "the caller did not evaluate this" -- which
+   * is the right answer here rather than an accident: nothing asked this
+   * applicant for documents, so there is nothing a lender could have reviewed.
    */
   it('refuses a guarded transition whose criteria nothing has evaluated', async () => {
-    const before = await eventCount(appForSuccess);
+    const before = await eventCount(appPackEmpty);
 
     const answer = await post(lender.token, {
       machine: 'application',
-      subjectId: appForSuccess,
+      subjectId: appPackEmpty,
       event: 'begin_review',
-      expectedRevision: SUBMITTED_REVISION + 1,
+      expectedRevision: DOCS_PENDING_REVISION,
     });
 
     expect(answer.status).toBe(422);
     expect(answer.payload['code']).toBe('guard_refused');
     expect(String(answer.payload['reason'])).toContain('not been evaluated');
-    expect(await eventCount(appForSuccess)).toBe(before);
-    expect((await readApplication(appForSuccess)).state).toBe('docs_pending');
+    expect(blockersOf(answer)).toEqual([]);
+    expect(await eventCount(appPackEmpty)).toBe(before);
+    expect((await readApplication(appPackEmpty)).state).toBe('docs_pending');
+  });
+});
+
+// Asking for documents is what brings the checklist into being, so the pack is
+// asserted against the product rather than against a fixed list: the whole
+// point of generating it is that an equipment loan and an operating line ask
+// for different things.
+describe('requesting documents generates the pack', () => {
+  it('creates exactly the slots the product asks for', async () => {
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appForPack,
+      event: 'request_docs',
+      expectedRevision: SUBMITTED_REVISION,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      to: 'docs_pending',
+      effects: ['create_document_slots'],
+    });
+
+    const slots = await readSlots(appForPack);
+    expect(slots.map((slot) => slot.code).sort()).toEqual([
+      'crop_insurance',
+      'id_verification',
+      'land_title',
+      'tax_return_2024',
+    ]);
+    // Every slot starts where the machine starts, and carries the terms it was
+    // created under: `extract_required` is copied onto the row rather than read
+    // back through the product, so editing the product later cannot change what
+    // an already generated slot is judged against.
+    expect(slots.every((slot) => slot.state === 'required')).toBe(true);
+    expect(slots.every((slot) => slot.required)).toBe(true);
+    expect(slots.find((slot) => slot.code === 'land_title')?.extract_required).toEqual([
+      'total_acres',
+      'owner_name',
+    ]);
+    expect(slots.find((slot) => slot.code === 'id_verification')?.extract_required).toEqual([]);
+    expect(slots.find((slot) => slot.code === 'crop_insurance')?.label).toBe(
+      'Crop insurance certificate',
+    );
+  });
+
+  /**
+   * Generating twice must not double the checklist.
+   *
+   * Asserted on the runner rather than through the endpoint because the machine
+   * has no second `request_docs` to fire -- the application has moved on -- and
+   * the race this guards against is two runs of the effect, not two legal
+   * transitions. The unique constraint on (application_id, code) is what makes
+   * it safe; a check-then-insert would be the race.
+   */
+  it('adds nothing when the effect runs a second time', async () => {
+    const before = await readSlots(appForPack);
+    expect(before.length).toBe(4);
+
+    const outcome = await runEffects(service, [{ kind: 'create_document_slots' }], {
+      applicationId: appForPack,
+      revision: SUBMITTED_REVISION + 1,
+      eligibility: [],
+      requiredDocs: [
+        {
+          code: 'land_title',
+          label: 'Land title or lease',
+          required: true,
+          extractRequired: ['total_acres', 'owner_name'],
+        },
+      ],
+      slot: null,
+      upload: null,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect((await readSlots(appForPack)).length).toBe(4);
+  });
+
+  /**
+   * A pack that does not parse refuses the transition whole.
+   *
+   * The alternative -- generating the slots that did parse -- is worse than
+   * refusing, because a checklist one document short reports COMPLETE once its
+   * slots are accepted, and nobody notices until a file reaches a lender
+   * without its land title. parseRequiredDocs fails closed for that reason and
+   * this is what failing closed has to look like from outside.
+   */
+  it('refuses when the product pack cannot be read, and generates nothing', async () => {
+    const before = await eventCount(appUnreadablePack);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appUnreadablePack,
+      event: 'request_docs',
+      expectedRevision: SUBMITTED_REVISION,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(String(answer.payload['reason'])).toContain(UNREADABLE_PACK_PRODUCT_NAME);
+
+    expect(await readSlots(appUnreadablePack)).toEqual([]);
+    expect(await eventCount(appUnreadablePack)).toBe(before);
+    expect(await readApplication(appUnreadablePack)).toEqual({
+      state: 'submitted',
+      revision: SUBMITTED_REVISION,
+    });
   });
 });
 
@@ -1063,6 +1717,765 @@ describe('a declared effect nothing can carry out', () => {
   });
 });
 
+// A document slot is the second machine with a table, and the first one whose
+// authority splits within a single subject: the borrower supplies the file and
+// the lender decides about it. Every case here asserts on the database
+// afterwards, because a 403 that moved the row would still be a 403.
+describe('moving a document slot', () => {
+  it('lets the lender accept a document the borrower supplied', async () => {
+    const before = await slotEventCount(slotToAccept);
+
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotToAccept,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      machine: 'document_slot',
+      subjectId: slotToAccept,
+      applicationId: appForDecision,
+      event: 'accept',
+      from: 'extracted',
+      to: 'accepted',
+      revision: 1,
+      actorRole: 'lender',
+    });
+
+    expect(await readSlot(slotToAccept)).toEqual({ state: 'accepted', revision: 1 });
+    expect(await slotEventCount(slotToAccept)).toBe(before + 1);
+  });
+
+  /**
+   * The decision is the lender's, and the endpoint is where that is enforced.
+   * A borrower who could accept their own documents would clear the
+   * `begin_review` guard without a lender ever reading one, and the database
+   * would not notice: the trigger checks the state pair and knows nothing about
+   * who asked.
+   */
+  it('refuses a borrower who tries to accept their own document', async () => {
+    const before = await slotEventCount(slotToReject);
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotToReject,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+    expect(blockersOf(answer)).toEqual([]);
+    expect(await readSlot(slotToReject)).toEqual({ state: 'extracted', revision: 0 });
+    expect(await slotEventCount(slotToReject)).toBe(before);
+  });
+
+  it('lets the lender reject one, and records the move', async () => {
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotToReject,
+      event: 'reject',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({ from: 'extracted', to: 'rejected', revision: 1 });
+    expect(await readSlot(slotToReject)).toEqual({ state: 'rejected', revision: 1 });
+
+    const events = await listWorkflowEvents(service, 'document_slot', slotToReject);
+    expect(events.at(-1)).toMatchObject({
+      machine: 'document_slot',
+      subject_id: slotToReject,
+      from_state: 'extracted',
+      to_state: 'rejected',
+      event: 'reject',
+      actor_id: lender.id,
+      actor_role: 'lender',
+    });
+  });
+
+  // The slot's audience is its application's audience, resolved through the
+  // application rather than restated. Another borrower is not in it.
+  it('hides a slot on an application the caller cannot read', async () => {
+    const answer = await post(otherBorrower.token, {
+      machine: 'document_slot',
+      subjectId: slotUntouched,
+      event: 'upload',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+    expect(await readSlot(slotUntouched)).toEqual({ state: 'required', revision: 0 });
+  });
+
+  it('hides a slot at another organisation from a lender', async () => {
+    const answer = await post(foreignLender.token, {
+      machine: 'document_slot',
+      subjectId: slotUntouched,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  it('refuses an event that does not leave the slot\'s state', async () => {
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotUntouched,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect(currentOf(answer)).toMatchObject({ state: 'required', revision: 0 });
+  });
+
+  // The same optimistic concurrency the application uses, on a second table:
+  // two lenders accepting one document serialise rather than race.
+  it('answers 409 when the slot moved under the caller', async () => {
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotAwaitingDecision,
+      event: 'accept',
+      expectedRevision: 7,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('revision_conflict');
+    expect(currentOf(answer)).toMatchObject({ state: 'extracted', revision: 0 });
+    expect(await readSlot(slotAwaitingDecision)).toEqual({ state: 'extracted', revision: 0 });
+    expect(await slotEventCount(slotAwaitingDecision)).toBe(0);
+  });
+});
+
+// The bytes never pass through this API. What it decides is that a write may
+// happen, and WHERE -- the path is minted here from the slot this server
+// loaded, so a caller cannot choose which application's folder to write into.
+describe('issuing a signed upload url', () => {
+  const PDF = 'application/pdf';
+
+  it('mints the path itself, from the slot rather than from the request', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: 'id_smith-farms.pdf',
+      mime: PDF,
+      bytes: 24_000,
+      // Offered, and ignored. A client-supplied path is a client choosing
+      // whose folder to write into, so the field is not read at all.
+      path: `${appForeign}/id_verification/00000000-0000-4000-8000-00000000ffff.pdf`,
+      storagePath: '../../etc/passwd',
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      slotId: slotUntouched,
+      applicationId: appForDecision,
+      bucket: 'documents',
+      event: 'upload',
+      maxBytes: 10_485_760,
+    });
+
+    // <application_id>/<slot_code>/<uuid>.<ext> -- the convention the storage
+    // policy reads, with the extension derived from the type and not from the
+    // caller's filename.
+    const path = String(answer.payload['path']);
+    expect(path).toMatch(
+      new RegExp(
+        `^${appForDecision}/id_verification/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.pdf$`,
+      ),
+    );
+    expect(path.startsWith(appForeign)).toBe(false);
+    expect(typeof answer.payload['token']).toBe('string');
+    expect(String(answer.payload['signedUrl']).length).toBeGreaterThan(0);
+  });
+
+  it('hides a slot on an application the caller does not own', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, otherBorrower.token, {
+      slotId: slotUntouched,
+      filename: 'id.pdf',
+      mime: PDF,
+      bytes: 1_000,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  // The lender decides about documents; the borrower supplies them. Read off
+  // the machine, so this route cannot disagree with the transition endpoint.
+  it('refuses a lender asking for somewhere to put a file', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, lender.token, {
+      slotId: slotUntouched,
+      filename: 'id.pdf',
+      mime: PDF,
+      bytes: 1_000,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+  });
+
+  it('refuses a file larger than the policy allows', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: 'huge.pdf',
+      mime: PDF,
+      bytes: 10_485_761,
+    });
+
+    expect(answer.status).toBe(413);
+    expect(answer.payload['code']).toBe('upload_too_large');
+  });
+
+  it('refuses a type the bucket does not hold', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: 'accounts.xlsx',
+      mime: 'application/vnd.ms-excel',
+      bytes: 4_000,
+    });
+
+    expect(answer.status).toBe(415);
+    expect(answer.payload['code']).toBe('upload_type_not_accepted');
+  });
+
+  it('refuses a slot that is waiting on a decision', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotAwaitingDecision,
+      filename: 'again.pdf',
+      mime: PDF,
+      bytes: 4_000,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+  });
+
+  it('refuses a request that names no file', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: '../../secrets/id.pdf',
+      mime: PDF,
+      bytes: 1_000,
+    });
+
+    expect(answer.status).toBe(400);
+    expect(String(answer.payload['reason'])).toContain('filename');
+  });
+});
+
+// The bucket is private, so a read is a signed url and the API is what decides
+// the caller may have one.
+describe('issuing a signed download url', () => {
+  let uploadId: string;
+  let storagePath: string;
+
+  beforeAll(async () => {
+    storagePath = `${appForDecision}/crop_insurance/${crypto.randomUUID()}.pdf`;
+    const { error } = await service.storage
+      .from('documents')
+      .upload(storagePath, new Blob([new Uint8Array([37, 80, 68, 70])], { type: 'application/pdf' }), {
+        contentType: 'application/pdf',
+      });
+    if (error !== null) {
+      throw new Error(`fixture object failed: ${error.message}`);
+    }
+    storedObjects.push(storagePath);
+
+    const row = await insertDocumentUpload(service, {
+      slot_id: slotAwaitingDecision,
+      storage_path: storagePath,
+      filename: 'crop_insurance_2027-03-01.pdf',
+      bytes: 4,
+      mime: 'application/pdf',
+      extraction_state: 'pending',
+    });
+    if (row === null) {
+      throw new Error('fixture document_upload failed');
+    }
+    uploadId = row.id;
+  }, 30_000);
+
+  it('issues one to the borrower whose file it is', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, borrower.token, {
+      slotId: slotAwaitingDecision,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      uploadId,
+      filename: 'crop_insurance_2027-03-01.pdf',
+      expiresInSeconds: 300,
+    });
+    // Signed, and pointing at the object the row names.
+    expect(String(answer.payload['url'])).toContain('token=');
+    expect(String(answer.payload['url'])).toContain(storagePath);
+  });
+
+  it('issues one to a lender at the receiving organisation', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, lender.token, {
+      slotId: slotAwaitingDecision,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(200);
+  });
+
+  it('refuses a lender at another organisation', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, foreignLender.token, {
+      slotId: slotAwaitingDecision,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  // The upload is read THROUGH the slot whose audience was checked, so an
+  // upload named with somebody else's slot is answered as absent rather than
+  // signed for.
+  it('refuses an upload that does not belong to the named slot', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(404);
+  });
+});
+
+// Extraction, end to end: the browser asks for somewhere to put a file, PUTs it
+// straight to storage, and fires the transition. The API never sees the bytes
+// and never learns the path from the caller -- it finds the object in the
+// folder it minted the path into.
+describe('uploading a document', () => {
+  it('records the file, reads it, and advances the slot to extracted', async () => {
+    const { path } = await uploadFile(
+      borrower.token,
+      slotForFullRead,
+      'deed_1240ac_smith-farms.pdf',
+    );
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotForFullRead,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'deed_1240ac_smith-farms.pdf',
+    });
+
+    expect(answer.status).toBe(200);
+    // `upload` moves the slot to `uploaded` and the extraction moves it on, so
+    // what the caller is told is where it ended up: a browser told `uploaded`
+    // would render a document as waiting for a read that already happened.
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      machine: 'document_slot',
+      from: 'required',
+      to: 'extracted',
+      revision: 2,
+      effects: ['extract_document'],
+    });
+    expect(await readSlot(slotForFullRead)).toEqual({ state: 'extracted', revision: 2 });
+
+    const uploads = await readUploads(slotForFullRead);
+    expect(uploads.length).toBe(1);
+    expect(uploads[0]).toMatchObject({
+      storage_path: path,
+      filename: 'deed_1240ac_smith-farms.pdf',
+      mime: 'application/pdf',
+      bytes: 4,
+      extraction_state: 'extracted',
+    });
+
+    // The wire shape is the one 0006_documents.sql documents and the browser
+    // reads: snake_case, integer basis points, and a source of 'ocr' or
+    // 'human'. A renamed key fails nothing and makes every field unreadable.
+    const acres = extractedField(uploads[0] as { extracted: Json }, 'total_acres');
+    expect(acres?.value).toBe(1240);
+    expect(acres?.source).toBe('ocr');
+    expect(acres?.confidence_basis_points).toBeGreaterThanOrEqual(7_000);
+    expect(extractedField(uploads[0] as { extracted: Json }, 'owner_name')?.value).toBe(
+      'Smith Farms',
+    );
+
+    // Two moves, two entries. The second has no actor: `extract` is the
+    // platform's own event and no person was behind it.
+    const events = await listWorkflowEvents(service, 'document_slot', slotForFullRead);
+    expect(events.map((event) => event.event)).toEqual(['upload', 'extract']);
+    expect(events[0]).toMatchObject({ actor_id: borrower.id, actor_role: 'borrower' });
+    expect(events[1]).toMatchObject({
+      from_state: 'uploaded',
+      to_state: 'extracted',
+      actor_id: null,
+      actor_role: null,
+    });
+  }, 30_000);
+
+  /**
+   * A partial read is not an error state. The slot still advances; the fields
+   * that were not read become completeness failures with a next action, which
+   * is what the borrower can act on. Refusing to advance would leave the
+   * document in `uploaded` with nothing able to move it.
+   */
+  it('advances the slot on a partial read, and says it was partial', async () => {
+    await uploadFile(borrower.token, slotForPartialRead, 'scan0007.pdf');
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotForPartialRead,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'scan0007.pdf',
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({ to: 'extracted', revision: 2 });
+
+    const uploads = await readUploads(slotForPartialRead);
+    expect(uploads[0]?.extraction_state).toBe('partial');
+    expect(extractedField(uploads[0] as { extracted: Json }, 'net_farm_income')).toBeUndefined();
+  }, 30_000);
+
+  /**
+   * An expiry read off the document is copied onto the slot, because `expired`
+   * is not a state: it is derived from `valid_until` and the clock, and this is
+   * where a document's shelf life enters the system.
+   */
+  it('copies an expiry it read onto the slot', async () => {
+    const slotId = await insertSlot({
+      applicationId: appForUpload,
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      state: 'required',
+      extractRequired: ['valid_until'],
+    });
+    await uploadFile(borrower.token, slotId, 'crop_insurance_2027-03-01.pdf');
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'crop_insurance_2027-03-01.pdf',
+    });
+
+    expect(answer.status).toBe(200);
+    const { data } = await service
+      .from('document_slot')
+      .select('valid_until')
+      .eq('id', slotId)
+      .single();
+    expect(data?.valid_until).toBe('2027-03-01');
+  }, 30_000);
+
+  /**
+   * Firing the transition without sending a file must not move the slot. A slot
+   * that said `uploaded` with nothing behind it is a checklist row nobody can
+   * act on: the borrower believes they sent something and the lender has
+   * nothing to open.
+   */
+  it('refuses when no file has been uploaded, and does not move the slot', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotWithNoFile,
+      event: 'upload',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(await readSlot(slotWithNoFile)).toEqual({ state: 'required', revision: 0 });
+    expect(await readUploads(slotWithNoFile)).toEqual([]);
+    expect(await slotEventCount(slotWithNoFile)).toBe(0);
+  });
+
+  // The file is found in the bucket, not named by the caller, so a second
+  // `upload` with no new file would otherwise record the previous one again.
+  it('refuses to record a file it has already recorded', async () => {
+    const slotId = await insertSlot({
+      applicationId: appForUpload,
+      code: 'lien_search',
+      label: 'Personal property lien search',
+      state: 'required',
+    });
+    await uploadFile(borrower.token, slotId, 'lien_search_2026-01-02.pdf');
+
+    const first = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'lien_search_2026-01-02.pdf',
+    });
+    expect(first.status).toBe(200);
+
+    // Back to a state that admits a file, without sending one.
+    const rejected = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'reject',
+      expectedRevision: 2,
+    });
+    expect(rejected.status).toBe(200);
+
+    const second = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'replace',
+      expectedRevision: 3,
+      filename: 'lien_search_2026-01-02.pdf',
+    });
+
+    expect(second.status).toBe(422);
+    expect(second.payload['code']).toBe('effect_input_invalid');
+    expect(String(second.payload['reason'])).toContain('already recorded');
+    expect((await readUploads(slotId)).length).toBe(1);
+    expect(await readSlot(slotId)).toEqual({ state: 'rejected', revision: 3 });
+  }, 30_000);
+});
+
+// Extraction proposes and a human confirms (plan/04). Once a person has typed a
+// value in, the machine's confidence in its own reading stops being the
+// question -- @lj/rules trusts `source: 'human'` whatever the confidence says.
+describe('correcting what the extractor could not read', () => {
+  it('appends a corrected reading and leaves the original alone', async () => {
+    const before = await readUploads(slotForPartialRead);
+    expect(before.length).toBe(1);
+    const original = before[0];
+    expect(original?.extraction_state).toBe('partial');
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: original?.id,
+      field: 'net_farm_income',
+      value: 18_420_000,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      slotId: slotForPartialRead,
+      field: 'net_farm_income',
+      source: 'human',
+      // A correction is not a transition: nothing moved, so a caller holding
+      // this revision still holds a current one.
+      state: 'extracted',
+      revision: 2,
+    });
+
+    const after = await readUploads(slotForPartialRead);
+    expect(after.length).toBe(2);
+
+    // The newest row carries the human value, at the same object: a correction
+    // is a claim about what the file says, not a different file.
+    const corrected = after[0];
+    expect(corrected?.extraction_state).toBe('corrected');
+    expect(corrected?.storage_path).toBe(original?.storage_path);
+    const field = extractedField(corrected as { extracted: Json }, 'net_farm_income');
+    expect(field?.value).toBe(18_420_000);
+    expect(field?.source).toBe('human');
+
+    // And the original is exactly as the extractor left it. document_upload has
+    // no UPDATE grant for anyone, service role included, and this is what that
+    // buys: "what did the machine actually read" survives somebody disagreeing.
+    expect(after[1]).toEqual(original);
+
+    // Attributable, because a value a lender relies on has to be traceable to
+    // whoever put it there.
+    const events = await listWorkflowEvents(service, 'document_slot', slotForPartialRead);
+    const latest = events.at(-1);
+    expect(latest).toMatchObject({
+      machine: 'document_slot',
+      subject_id: slotForPartialRead,
+      event: 'correct',
+      from_state: 'extracted',
+      to_state: 'extracted',
+      actor_id: borrower.id,
+      actor_role: 'borrower',
+    });
+  });
+
+  /**
+   * The lender's remedy for a document they do not believe is `reject`, which
+   * is the decision they hold. Letting the party who decides also write the
+   * evidence they decide on is a different system from the one plan/04
+   * describes.
+   */
+  it('refuses a lender', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+    const answer = await postTo(CORRECTION, CORRECTION_URL, lender.token, {
+      slotId: slotForPartialRead,
+      uploadId: uploads[0]?.id,
+      field: 'net_farm_income',
+      value: 1,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  // The optimistic-concurrency check an append-only table can have: correcting
+  // a superseded reading would append a new newest row carrying values from a
+  // file that has already been replaced.
+  it('refuses a correction to a reading that has been superseded', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+    const superseded = uploads.at(-1);
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: superseded?.id,
+      field: 'net_farm_income',
+      value: 2,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  it('refuses a field the document was never asked for', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: uploads[0]?.id,
+      field: 'anything_at_all',
+      value: 'invented',
+    });
+
+    expect(answer.status).toBe(422);
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  /**
+   * A fractional figure would be stored, shown, and then silently ignored by
+   * the cross-document comparison the correction exists to satisfy: those rules
+   * read integers, because money is integer minor units.
+   */
+  it('refuses a value the rules could not compare', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+
+    for (const value of [null, 12.5, { typed: true }, '']) {
+      const answer = await postTo(CORRECTION, CORRECTION_URL, borrower.token, {
+        slotId: slotForPartialRead,
+        uploadId: uploads[0]?.id,
+        field: 'net_farm_income',
+        value,
+      });
+      expect(answer.status).toBe(400);
+    }
+    expect((await readUploads(slotForPartialRead)).length).toBe(uploads.length);
+  });
+
+  it('hides a slot on an application the caller does not own', async () => {
+    const uploads = await readUploads(slotForPartialRead);
+
+    const answer = await postTo(CORRECTION, CORRECTION_URL, otherBorrower.token, {
+      slotId: slotForPartialRead,
+      uploadId: uploads[0]?.id,
+      field: 'net_farm_income',
+      value: 5,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+});
+
+// The guard that decides whether a lender may start reading a file. Its whole
+// content is `evaluateCompleteness`, which is not restated here: what these
+// cases assert is that the API hands it the right context and reports its
+// verdict without flattening it.
+describe('beginning a review', () => {
+  it('refuses with a blocker per slot, keeping the three failures apart', async () => {
+    const before = await eventCount(appPackIncomplete);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appPackIncomplete,
+      event: 'begin_review',
+      expectedRevision: DOCS_PENDING_REVISION,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('guard_refused');
+    expect(String(answer.payload['reason'])).toContain('document pack');
+
+    const byId = new Map(ruleResults(answer).map((result) => [result.id, result]));
+
+    // MISSING -- nothing uploaded. `unknown`, not `fail`: nothing has gone
+    // wrong, the file is simply not there yet, and the next action is to send
+    // one. It names the slot as the outstanding input.
+    const missing = byId.get('document_slot.id_verification');
+    expect(missing?.status).toBe('unknown');
+    expect(missing?.missing).toContain('id_verification');
+    expect(String(missing?.explain)).toContain('upload');
+
+    // STALE -- accepted, and out of date. A real failure with a different next
+    // action: send a NEWER one.
+    const stale = byId.get('document_slot.crop_insurance');
+    expect(stale?.status).toBe('fail');
+    expect(String(stale?.explain)).toContain('2020-01-31');
+    expect(String(stale?.explain)).toContain('current');
+
+    // UNREADABLE -- accepted, current, and the figure came back below the
+    // confidence floor. Next action: a clearer scan, or type the value in.
+    const unreadable = byId.get('document_slot.tax_return_2024');
+    expect(unreadable?.status).toBe('fail');
+    expect(String(unreadable?.explain)).toContain('Could not read');
+    expect(String(unreadable?.explain)).toContain('net farm income');
+
+    // Three failures, three explanations, and no two the same.
+    const explanations = new Set([missing?.explain, stale?.explain, unreadable?.explain]);
+    expect(explanations.size).toBe(3);
+
+    // The finished slot is not a blocker. Blockers are what stands in the way,
+    // not the whole checklist.
+    expect(byId.has('document_slot.land_title')).toBe(false);
+
+    expect(await eventCount(appPackIncomplete)).toBe(before);
+    expect((await readApplication(appPackIncomplete)).state).toBe('docs_pending');
+  });
+
+  it('passes once every required slot is accepted and valid', async () => {
+    const before = await eventCount(appPackComplete);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appPackComplete,
+      event: 'begin_review',
+      expectedRevision: DOCS_PENDING_REVISION,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      from: 'docs_pending',
+      to: 'under_review',
+      revision: DOCS_PENDING_REVISION + 1,
+    });
+    expect(await readApplication(appPackComplete)).toEqual({
+      state: 'under_review',
+      revision: DOCS_PENDING_REVISION + 1,
+    });
+    expect(await eventCount(appPackComplete)).toBe(before + 1);
+  });
+
+});
+
+// `credit_release` is the last machine without a table. `document_slot` had one
+// as of 0006_documents.sql and is adjudicated above.
 describe('a machine with no subject store', () => {
   it('says so rather than pretending the subject is absent', async () => {
     const answer = await post(borrower.token, {

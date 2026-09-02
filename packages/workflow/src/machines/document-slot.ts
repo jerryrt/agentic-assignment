@@ -44,7 +44,19 @@ export const documentSlotMachine = defineMachine<
   initial: 'required',
   states: DOCUMENT_SLOT_STATES,
   transitions: [
-    { from: 'required', event: 'upload', to: 'uploaded', actor: ['borrower'] },
+    /**
+     * A file arriving is the only thing that gives an extractor something to
+     * read, so `upload` and `replace` are the two transitions that declare it.
+     * `accept`, `reject` and `extract` are decisions about a document that has
+     * already been read.
+     */
+    {
+      from: 'required',
+      event: 'upload',
+      to: 'uploaded',
+      actor: ['borrower'],
+      effects: [{ kind: 'extract_document' }],
+    },
     /**
      * Extraction is performed by the platform, and the diagram calls the actor
      * "system". `app_role` has no `system` member and
@@ -57,6 +69,12 @@ export const documentSlotMachine = defineMachine<
     { from: 'uploaded', event: 'extract', to: 'extracted', actor: ['admin'] },
     { from: 'extracted', event: 'accept', to: 'accepted', actor: ['lender'] },
     { from: 'extracted', event: 'reject', to: 'rejected', actor: ['lender'] },
-    { from: ['rejected', 'accepted'], event: 'replace', to: 'uploaded', actor: ['borrower'] },
+    {
+      from: ['rejected', 'accepted'],
+      event: 'replace',
+      to: 'uploaded',
+      actor: ['borrower'],
+      effects: [{ kind: 'extract_document' }],
+    },
   ],
 });

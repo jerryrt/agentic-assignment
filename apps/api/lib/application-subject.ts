@@ -21,6 +21,7 @@ import {
   ApplicationBorrowerViewSchema,
   moneyFromNumericString,
   parseApplicationData,
+  type ApplicationData,
   type ApplicationState,
   type JsonValue,
   type Money,
@@ -30,6 +31,7 @@ import {
   atLeastOneEligibleProduct,
   eligibilityContextFromApplication,
   evaluateApplicationCompleteness,
+  evaluateCompleteness,
   evaluateEligibility,
   parseEligibilityCriteria,
   type EligibilityProduct,
@@ -43,6 +45,7 @@ import {
 } from '@lj/workflow';
 
 import type { Actor } from './actor.ts';
+import { buildDocumentContext } from './document-pack.ts';
 import type { SubjectSnapshot } from './http.ts';
 
 export interface ApplicationSubject {
@@ -186,6 +189,14 @@ export interface ApplicationEvaluation {
   readonly context: ApplicationGuardContext;
   /** Every active product this application was evaluated against, as evaluated. */
   readonly eligibility: readonly ProductEligibility[];
+  /**
+   * The payload, parsed once.
+   *
+   * Carried rather than re-parsed by whoever needs it next: an effect resolves
+   * the product from `request.product_id`, and two parses of one row are two
+   * chances to disagree about what it says.
+   */
+  readonly data: ApplicationData;
 }
 
 /**
@@ -198,17 +209,17 @@ export interface ApplicationEvaluation {
  * evaluated and blocks, because reading "no criteria" as "no objections" would
  * let a forgotten evaluation open a transition.
  *
- * One of the three is still empty, and it is waiting on work this scope does
- * not own:
+ * All three are now evaluated. `documentPack` reads the slots and the files
+ * against them, and an application with NO slots therefore evaluates to an
+ * empty set -- which requireRules reads as "not evaluated" and refuses. That is
+ * the right answer rather than an accident: an application at `docs_pending`
+ * with no checklist is one nothing asked for documents on, and there is nothing
+ * for a lender to have reviewed.
  *
- *   documentPack  Whether every required document is accepted and current.
- *                 packages/rules HAS this rule set -- evaluateCompleteness --
- *                 but `document_slot` has no table (Phase 6), so there are no
- *                 slots to evaluate.
- *
- * The consequence is visible and correct: `begin_review` refuses with 422 and
- * says the criteria have not been evaluated. Wiring that bucket is one call in
- * this function once its producer exists.
+ * It is evaluated for every transition that needs an evaluation, including the
+ * ones whose guards never look at it. Two indexed reads is not a reason to make
+ * the caller decide which buckets a transition will want, and a bucket filled
+ * only sometimes is a bucket somebody eventually forgets to fill.
  *
  * A PAYLOAD THAT DOES NOT PARSE REFUSES, and says so. It must not fall back to
  * an empty context: that reads to the applicant as four unanswered steps, when
@@ -244,7 +255,12 @@ export async function evaluateApplication(
     };
   }
 
-  const products = eligibilityProducts(await listActiveLoanProducts(client, subject.orgId));
+  const [productRows, documents] = await Promise.all([
+    listActiveLoanProducts(client, subject.orgId),
+    buildDocumentContext(client, subject.id),
+  ]);
+
+  const products = eligibilityProducts(productRows);
   const evaluated = evaluateEligibility(
     products,
     eligibilityContextFromApplication(parsed.data),
@@ -258,9 +274,10 @@ export async function evaluateApplication(
       context: {
         completeness: evaluateApplicationCompleteness(parsed.data),
         eligibility,
-        documentPack: [],
+        documentPack: evaluateCompleteness(documents),
       },
       eligibility: evaluated,
+      data: parsed.data,
     },
   };
 }

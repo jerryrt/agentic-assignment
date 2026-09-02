@@ -81,6 +81,25 @@ export const routes: Routes = [
 
   // ---- FEATURE ROUTES GO HERE, above the wildcard ----
 
+  /**
+   * Option 1's document pack, at the URL plan/04 fixes.
+   *
+   * It sits ABOVE `apply` and that placement is load-bearing: routes match in
+   * order, and `apply/:id/:step` below would otherwise swallow
+   * `/apply/x/documents` as a step named "documents" and the step guard would
+   * redirect it. Three literal-and-parameter segments are more specific than
+   * two, so declaring it first is what makes the more specific one win.
+   *
+   * Component-less, like every `loadChildren` entry here, so `:id` is
+   * inherited by the components underneath it.
+   */
+  {
+    path: 'apply/:id/documents',
+    canActivate: [authGuard],
+    loadChildren: () =>
+      import('./features/documents/documents.routes.ts').then((m) => m.DOCUMENTS_ROUTES),
+  },
+
   {
     path: 'apply',
     canActivate: [authGuard],
