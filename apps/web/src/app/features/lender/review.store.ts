@@ -123,12 +123,14 @@ export interface ReviewValue {
 /**
  * The decline reason, carried with the transition that writes it.
  *
- * `TransitionRequest` in `core/` does not name this field -- that file belongs
- * to web-core (#19) and this feature may not edit it -- so the field is declared
- * here, on a type that IS one. Nothing is asserted away: a wider object is a
- * legal argument, the endpoint parses its body field by field and ignores what
- * it does not know, and the check above means a reason that fails to land is
- * reported rather than lost.
+ * `POST /api/transition` parses this field: it is validated as non-empty prose
+ * with no control characters, at most 1000 characters, and written by the
+ * service role in the same statement that moves the state
+ * (apps/api/lib/request.ts). What does not name it is `TransitionRequest` in
+ * `core/`, which belongs to web-core (#19) and this feature may not edit -- so
+ * the field is declared here, on a type that IS one. Nothing is asserted away:
+ * a wider object is a legal argument to `fire`, and the check after the
+ * decision means a reason that fails to land is reported rather than lost.
  */
 interface DeclineRequest extends TransitionRequest {
   readonly declineReason: string;
