@@ -2,7 +2,9 @@
   // Shared compiler options live once, in tooling/tsconfig; a package that
   // restates them drifts from the rest of the workspace without anyone noticing.
   "extends": "@lj/tsconfig/angular.json",
-  // "test" is listed before it exists so that the first test file added by the
-  // owning scope is typechecked without a tsconfig edit.
-  "include": ["src", "test"]
+  // The specs are excluded here and picked up by tsconfig.spec.json instead:
+  // they are the only files that see the test runner's globals, and a program
+  // that includes them would have to make `describe` visible to the library.
+  "include": ["src"],
+  "exclude": ["src/**/*.spec.ts"]
 }
