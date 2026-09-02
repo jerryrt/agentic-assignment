@@ -56,6 +56,7 @@ import type { ProductEligibility, RequiredDocSlot } from '@lj/rules';
 import {
   applicationMachine,
   apply,
+  creditReleaseMachine,
   documentSlotMachine,
   type ApplicationEvent,
   type EffectSpec,
@@ -74,6 +75,17 @@ import {
   type ApplicationEvaluation,
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
+import {
+  advanceCreditRelease,
+  asCreditReleaseEvent,
+  creditReleaseEventRecordsDecider,
+  creditReleaseTransitionNeedsEvaluation,
+  evaluateCreditReleaseSubject,
+  loadCreditRelease,
+  loadLoan,
+  UNEVALUATED_CREDIT_RELEASE_CONTEXT,
+  type CreditReleaseEvaluation,
+} from '../../lib/credit-release-subject.ts';
 import { resolveRequiredDocs } from '../../lib/document-pack.ts';
 import { resolveLoanTerms, type LoanTerms } from '../../lib/loan-terms.ts';
 import {
@@ -153,11 +165,16 @@ async function adjudicate(request: Request): Promise<Response> {
     event,
     expectedRevision,
     filename: parsed.request.filename,
+    declineReason: parsed.request.declineReason,
   };
-  if (machine === 'document_slot') {
-    return await adjudicateDocumentSlot(service, adjudication);
+  switch (machine) {
+    case 'document_slot':
+      return await adjudicateDocumentSlot(service, adjudication);
+    case 'credit_release':
+      return await adjudicateCreditRelease(service, adjudication);
+    case 'application':
+      return await adjudicateApplication(service, adjudication);
   }
-  return await adjudicateApplication(service, adjudication);
 }
 
 /** What both adjudicators take, once the request has been made sense of. */
@@ -170,6 +187,8 @@ interface AdjudicationRequest {
   readonly expectedRevision: number;
   /** The label on the file an upload is about. Read by no other transition. */
   readonly filename: string | null;
+  /** The reason a decline is refused for. Read by no other transition. */
+  readonly declineReason: string | null;
 }
 
 /**
@@ -718,7 +737,212 @@ async function adjudicateDocumentSlot(
   });
 }
 
-/** One audit entry, as both machines write it. */
+/**
+ * A credit release moves through the same endpoint, and it is the first subject
+ * whose guard reads money.
+ *
+ * Two properties are load-bearing here and neither is visible from the machine
+ * definition alone.
+ *
+ * THE CAP AND THE BORROWER'S FIGURE ARE ONE QUANTITY. The `submit` guard
+ * compares against `availableCredit` in packages/rules, computed over
+ * `loan_balance_v` -- the same view, the same row and the same function the
+ * borrower's screen uses. plan/06 is explicit that they must not be two
+ * numbers, because a borrower who was told a request was affordable and then
+ * refused has been lied to by one of the two.
+ *
+ * WHAT A DECISION WRITES ARRIVES WITH IT. `decided_by` and `decline_reason`
+ * have no client grant at all -- a borrower and a lender are the same database
+ * role -- so this handler is their only possible author, and they are written
+ * in the same revision-matched statement that moves the state. A decline that
+ * landed without its reason could never acquire one afterwards, so one is
+ * required rather than optional.
+ */
+async function adjudicateCreditRelease(
+  service: DatabaseClient,
+  request: AdjudicationRequest,
+): Promise<Response> {
+  const { actor, subjectId, event, expectedRevision } = request;
+
+  const release = await loadCreditRelease(service, subjectId);
+  if (release === null) {
+    return failure(404, 'subject_not_found', 'no such credit release');
+  }
+
+  // The audience is the loan's, which is the application's, resolved through
+  // both rather than restated over the loan's denormalised columns -- the shape
+  // `credit_release_read_visible_loan` has in 0007_servicing.sql. A caller who
+  // cannot read the application is answered as though the release did not
+  // exist, because distinguishing "forbidden" from "absent" hands out the
+  // existence of other people's loans.
+  const loan = await loadLoan(service, release.loanId);
+  if (loan === null) {
+    return failure(404, 'subject_not_found', 'no such credit release');
+  }
+  const application = await loadApplication(service, loan.applicationId);
+  if (application === null || !applicationReadableBy(application, actor)) {
+    return failure(404, 'subject_not_found', 'no such credit release');
+  }
+
+  const current: SubjectSnapshot = { state: release.state, revision: release.revision };
+
+  const refused = structuralRefusal(request.machine, actor, event, current);
+  if (refused !== null) {
+    return refused;
+  }
+
+  const narrowed = asCreditReleaseEvent(event);
+  if (narrowed === null) {
+    // Unreachable: the parse rejected any event this machine does not declare.
+    return failure(400, 'invalid_request', "unknown event '" + event + "'");
+  }
+
+  // Only for a transition that reads a rule set. `begin_review`, `approve`,
+  // `decline` and `cancel` declare no guard and no effect, so evaluating for
+  // them would be two reads nobody looks at -- and, worse, a balance that could
+  // not be read would refuse them. A borrower's way out of a request they have
+  // already made must not depend on rules with nothing to say about it (#26).
+  let evaluation: CreditReleaseEvaluation | null = null;
+  if (creditReleaseTransitionNeedsEvaluation(release.state, narrowed)) {
+    const evaluated = await evaluateCreditReleaseSubject(service, loan, release);
+    if (!evaluated.ok) {
+      // No criteria to show: the figures the criteria are about could not be
+      // read at all, which is a different problem from a request that is too
+      // large, and only one of the two is the borrower's to fix.
+      return failure(422, 'guard_refused', evaluated.reason, { blockers: [], current });
+    }
+    evaluation = evaluated.evaluation;
+  }
+
+  const outcome = apply(
+    creditReleaseMachine,
+    release.state,
+    narrowed,
+    actor.role,
+    evaluation?.context ?? UNEVALUATED_CREDIT_RELEASE_CONTEXT,
+  );
+  if (!outcome.ok) {
+    return failure(422, 'guard_refused', outcome.reason, {
+      blockers: outcome.blockers,
+      current,
+    });
+  }
+
+  const unrunnable = unrunnableEffects(outcome.effects);
+  if (unrunnable.length > 0) {
+    return failure(
+      501,
+      'effect_not_implemented',
+      "'" +
+        event +
+        "' declares the effect " +
+        unrunnable.join(', ') +
+        ', which this API cannot yet carry out; the transition is refused rather ' +
+        'than performed without it',
+      { blockers: [], current },
+    );
+  }
+
+  // A decline with no reason is refused before anything is written. The column
+  // has no client UPDATE grant, so the reason arrives here or never: a decline
+  // that landed without one would be permanently unexplained, and "the reason
+  // text and what to change" is what plan/06 says a decline is for.
+  if (narrowed === 'decline' && request.declineReason === null) {
+    return failure(
+      400,
+      'invalid_request',
+      "'decline' must carry declineReason: no client may write it afterwards, so a " +
+        'decline recorded without one could never be explained',
+      { blockers: [], current },
+    );
+  }
+
+  const advanced = await advanceCreditRelease(service, {
+    releaseId: release.id,
+    expectedRevision,
+    to: outcome.to,
+    ...(creditReleaseEventRecordsDecider(narrowed) ? { decidedBy: actor.id } : {}),
+    ...(narrowed === 'decline' && request.declineReason !== null
+      ? { declineReason: request.declineReason }
+      : {}),
+  });
+  if (advanced === null) {
+    const now = await loadCreditRelease(service, release.id);
+    return failure(
+      409,
+      'revision_conflict',
+      'the request moved while this transition was in flight; nothing was written',
+      {
+        blockers: [],
+        current: now === null ? null : { state: now.state, revision: now.revision },
+      },
+    );
+  }
+
+  const appended = await appendEvent(service, {
+    machine: 'credit_release',
+    subjectId: release.id,
+    from: release.state,
+    to: advanced.state,
+    event: narrowed,
+    actorId: actor.id,
+    actorRole: actor.role,
+    payload: {
+      revision: advanced.revision,
+      effects: outcome.effects.map((effect) => effect.kind),
+    },
+  });
+  if (!appended) {
+    return failure(
+      500,
+      'event_log_write_failed',
+      'the request moved to ' +
+        advanced.state +
+        ' but its audit entry could not be written; the state change stands and the ' +
+        'log is short one row',
+      { blockers: [], current: advanced },
+    );
+  }
+
+  const ran = await runEffects(service, outcome.effects, {
+    applicationId: loan.applicationId,
+    revision: advanced.revision,
+    eligibility: [],
+    requiredDocs: [],
+    slot: null,
+    upload: null,
+    loanTerms: null,
+  });
+  if (!ran.ok) {
+    return failure(
+      500,
+      'effect_write_failed',
+      'the request moved to ' +
+        advanced.state +
+        " but the declared effect '" +
+        ran.kind +
+        "' did not: " +
+        ran.reason +
+        '; the state change stands',
+      { blockers: [], current: advanced },
+    );
+  }
+
+  return success({
+    machine: 'credit_release' satisfies WorkflowMachine,
+    subjectId: release.id,
+    loanId: loan.id,
+    event: narrowed,
+    from: release.state,
+    to: advanced.state,
+    revision: advanced.revision,
+    actorRole: actor.role,
+    effects: outcome.effects.map((effect) => effect.kind),
+    events: await listWorkflowEvents(service, 'credit_release', release.id),
+  });
+}
+
+/** One audit entry, as every machine writes it. */
 interface EventRecord {
   readonly machine: WorkflowMachine;
   readonly subjectId: string;
@@ -791,14 +1015,26 @@ async function readJsonBody(request: Request): Promise<JsonBody | UnreadableBody
 /**
  * Which machines have somewhere to keep a subject.
  *
- * `document_slot` has a table as of `0006_documents.sql`, which also attaches
- * `assert_legal_transition` to it -- the requirement the handoff on issue #9
- * states for anyone creating one. `credit_release` arrives with the servicing
- * option in plan/06: it is a complete machine with generated SQL rows already,
- * and what it lacks is the table. Whoever adds one adds the trigger, a loader
- * that validates the row with the schema that owns it, a predicate that
- * re-makes the read policy's decision, and a branch in `adjudicate`.
+ * All three now do: `application` from `0001_init.sql`, `document_slot` from
+ * `0006_documents.sql` and `credit_release` from `0007_servicing.sql`, each
+ * with `assert_legal_transition` attached -- the requirement the handoff on
+ * issue #9 states for anyone creating one.
+ *
+ * Written as an exhaustive switch rather than deleted along with its refusal.
+ * A fourth machine declared in `packages/domain` and given no table would
+ * otherwise reach an adjudicator that cannot serve it; here it fails to
+ * compile, and if it somehow did not, the 501 below is the honest answer --
+ * "this deployment cannot keep one of those", rather than "no such subject",
+ * which would send someone hunting for a row that was never going to be there.
+ * Whoever adds the fourth adds the trigger, a loader that validates the row
+ * with the schema that owns it, a re-make of the read policy's decision, and a
+ * branch in `adjudicate`.
  */
 function hasSubjectStore(machine: WorkflowMachine): boolean {
-  return machine === 'application' || machine === 'document_slot';
+  switch (machine) {
+    case 'application':
+    case 'document_slot':
+    case 'credit_release':
+      return true;
+  }
 }
