@@ -30,6 +30,19 @@ import { SupabaseAuthService } from './auth.service.ts';
     <div class="lj-page" style="max-width: 420px">
       <h1>Create an account</h1>
 
+      <!--
+        Registration is open in code and closed in practice. The deployed project
+        requires an email confirmation and has no mail service to send one, so a
+        new account is created and can never sign in. Saying that here is cheaper
+        than letting someone find out by being refused their own password.
+      -->
+      <p class="lj-notice lj-notice--warn" data-testid="registration-closed">
+        Registration is not open in this demo. An account can be created, but the
+        deployed project confirms addresses by email and has no mail service, so
+        it could never sign in. Use a demo account on the
+        <a routerLink="/signin">sign in</a> page instead.
+      </p>
+
       @if (auth.configurationError; as configurationError) {
         <p class="lj-notice lj-notice--warn" data-testid="configuration-error">
           {{ configurationError }}

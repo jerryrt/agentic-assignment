@@ -119,7 +119,8 @@ apps/web/e2e/
   fixtures/
     db.ts             truncate + seed, exposed as a worker fixture
     roles.ts          borrowerPage / lenderPage, pre-authenticated contexts
-    seed.sql          the interesting states from ../plan/02-domain-model.md
+    migrations/       schema, policies, and 0004_demo_data.sql -- the
+                      interesting states from ../plan/02-domain-model.md
   system/
   functional/
   visual/

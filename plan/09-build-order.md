@@ -100,7 +100,9 @@ Scopes `api`, `web-core`, plus the test harness.
   same transaction.
 - Supabase Auth signup and login, `authGuard`, `roleGuard`.
 - App shell, nav, borrower versus lender routing, the store base class.
-- `seed.sql` with the four interesting states from [`02-domain-model.md`](02-domain-model.md).
+- Demo data with the four interesting states from [`02-domain-model.md`](02-domain-model.md).
+  It is a migration rather than a seed: `supabase db push` applies migrations only,
+  so a seed never reaches the deployed demo and its accounts cannot be logged into.
 - **Playwright harness**: fixtures, per-role saved auth state, database reset, and one smoke
   journey. Built now, not at the end, so every later phase lands against a suite that already
   runs. See [`../docs/02-browser-testing.md`](../docs/02-browser-testing.md).

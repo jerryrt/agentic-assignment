@@ -1,13 +1,13 @@
 // The seeded demo accounts, named once.
 //
-// These are the rows supabase/seed.sql writes into auth.users.  The suite uses
+// These are the rows supabase/migrations/0004_demo_data.sql writes into auth.users.  The suite uses
 // them rather than signing up fresh users, because the seed is where the
 // INTERESTING states live -- a draft stopped mid-form, an application waiting on
 // a lender, a decision only the lender may read -- and a freshly created user
 // owns none of them.  The one place that must still sign up is the auth journey
 // itself, which is testing signup.
 //
-// The password below is published in supabase/seed.sql, under a banner saying
+// The password below is published in supabase/migrations/0004_demo_data.sql, under a banner saying
 // the file must never reach a hosted project.  It is a local-stack demo
 // credential, not a secret, and repeating it here would still be a second copy
 // of a value with one owner -- so assertSeedMatches() checks the copy against
@@ -31,7 +31,7 @@ export interface Account {
   readonly holds: string;
 }
 
-/** Identical for every seeded account, on purpose. See supabase/seed.sql. */
+/** Identical for every seeded account, on purpose. See supabase/migrations/0004_demo_data.sql. */
 export const SEEDED_PASSWORD = 'demo-only-not-a-secret';
 
 export const ACCOUNTS: Readonly<Record<Role, Account>> = {
@@ -55,7 +55,7 @@ export const ACCOUNTS: Readonly<Record<Role, Account>> = {
   },
 };
 
-export const SEED_PATH = `${repoRoot}supabase/seed.sql`;
+export const SEED_PATH = `${repoRoot}supabase/migrations/0004_demo_data.sql`;
 
 /**
  * Fails if this file and the seed have drifted.
@@ -68,20 +68,20 @@ export function assertSeedMatches(): void {
   const seed = readFileSync(SEED_PATH, 'utf8');
   if (!seed.includes(`crypt('${SEEDED_PASSWORD}'`)) {
     throw new Error(
-      `supabase/seed.sql no longer hashes the password this suite uses. ` +
+      `supabase/migrations/0004_demo_data.sql no longer hashes the password this suite uses. ` +
         `Update SEEDED_PASSWORD in apps/web/e2e/fixtures/accounts.ts to match the seed.`,
     );
   }
   for (const account of Object.values(ACCOUNTS)) {
     if (!seed.includes(account.email)) {
       throw new Error(
-        `supabase/seed.sql no longer seeds ${account.email}. ` +
+        `supabase/migrations/0004_demo_data.sql no longer seeds ${account.email}. ` +
           `Update ACCOUNTS in apps/web/e2e/fixtures/accounts.ts to match the seed.`,
       );
     }
     if (!seed.includes(account.id)) {
       throw new Error(
-        `supabase/seed.sql no longer seeds the id recorded for ${account.email}. ` +
+        `supabase/migrations/0004_demo_data.sql no longer seeds the id recorded for ${account.email}. ` +
           `Update ACCOUNTS in apps/web/e2e/fixtures/accounts.ts to match the seed.`,
       );
     }

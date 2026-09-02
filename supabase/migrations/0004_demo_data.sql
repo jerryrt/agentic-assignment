@@ -1,13 +1,27 @@
--- Demo seed for the LOCAL, THROWAWAY Supabase stack.
+-- Demo accounts and demo data, for the local stack AND for the deployed demo.
 --
 -- ############################################################################
--- #  NEVER APPLY THIS FILE TO A HOSTED PROJECT.                              #
--- #  It writes rows straight into auth.users with a password that is printed  #
--- #  in the comment below, identical for every account.  On a hosted project  #
--- #  that is not a seed, it is a set of published credentials.  The local     #
--- #  stack is reachable only from 127.0.0.1 and is destroyed by the next      #
--- #  `supabase db reset`, which is the only reason it is acceptable here.     #
+-- #  THE CREDENTIALS BELOW ARE PUBLIC, DELIBERATELY.                         #
+-- #  This is an assignment demo that has to be walkable from a live URL by    #
+-- #  someone who was not given an account, and the project has no email       #
+-- #  gateway, so a visitor cannot register and confirm one.  Anyone holding   #
+-- #  the URL can therefore sign in as the borrower or the lender.             #
+-- #                                                                          #
+-- #  That is acceptable only because the project holds nothing real: every    #
+-- #  row here is invented, the addresses are @example.test, and row-level     #
+-- #  security still governs what each account can see -- the demo lender      #
+-- #  cannot read another organisation's files.  It would not be acceptable    #
+-- #  the moment a real borrower's data existed, and at that point these       #
+-- #  accounts must be removed rather than have their password changed.        #
 -- ############################################################################
+--
+-- This was `supabase/seed.sql` until it became clear that a seed never reaches
+-- a hosted project: `supabase db push` applies migrations only.  Signup on the
+-- deployed site appeared to succeed and then could not log in, because the
+-- hosted project requires email confirmation and there is no mail gateway to
+-- confirm through.  Making the demo accounts a migration is what puts them in
+-- both places from one file, and `email_confirmed_at` below is what makes them
+-- usable on a stack that has confirmations enabled.
 --
 -- Purpose, from plan/02-domain-model.md ("Seed data"): produce a demo walkable
 -- in 60 seconds.  Empty tables demo nothing, so what is seeded is the
@@ -15,8 +29,8 @@
 -- lender, and one already decided with the lender's private reasoning attached
 -- -- because those are the states that show what the system does.
 --
--- Re-runnability: `supabase db reset` drops the database, runs the migrations
--- and then runs this file, so the ordinary path always starts empty.  The file
+-- Re-runnability: `supabase db reset` drops the database and runs the migrations
+-- in order, so the ordinary path always starts empty.  The file
 -- is nevertheless written to survive being applied twice to the same database:
 -- every row has a fixed id and the preamble removes the previous generation
 -- first.  That matters because a seed that only works once is a seed nobody can

@@ -9,7 +9,7 @@
 // Why not a shared seeded database, never reset?  It is faster, and it works
 // right up to the first test that changes something.  The seed exists to hold
 // the interesting states -- a draft stopped at step 3, an application waiting on
-// a lender, an approved file with the lender's private note (supabase/seed.sql).
+// a lender, an approved file with the lender's private note (supabase/migrations/0004_demo_data.sql).
 // Those are exactly the rows a journey mutates: approve the application and the
 // next file's "awaiting your decision" assertion fails, in a different file,
 // with no clue that a neighbour caused it.  Order-dependent failures are the
@@ -26,7 +26,7 @@
 // Supabase CLI does not give us cheaply; correctness first, and the suite is
 // small by design.
 //
-// Why re-run supabase/seed.sql rather than `supabase db reset`?  A full reset
+// Why re-run supabase/migrations/0004_demo_data.sql rather than `supabase db reset`?  A full reset
 // drops the database and replays every migration, which is tens of seconds and
 // destroys any other work in progress on the same stack.  The seed file is
 // written to be applied repeatedly -- it deletes its own previous generation
@@ -96,12 +96,12 @@ export function assertDatabaseReachable(): void {
 }
 
 /**
- * Truncate and re-seed: re-applies supabase/seed.sql.
+ * Truncate and re-seed: re-applies supabase/migrations/0004_demo_data.sql.
  *
  * The seed is read from disk on every call rather than cached, so a developer
  * editing it does not have to restart the runner to see the effect.
  */
 export function resetDatabase(): void {
   const seed = readFileSync(SEED_PATH, 'utf8');
-  runSql(seed, 'database reset (re-applying supabase/seed.sql)');
+  runSql(seed, 'database reset (re-applying supabase/migrations/0004_demo_data.sql)');
 }

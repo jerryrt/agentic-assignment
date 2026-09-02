@@ -30,7 +30,7 @@ import { normaliseEntityName } from './entity-name.ts';
  * left implicit.
  */
 
-/** Slot codes as `supabase/seed.sql` writes them, named once. */
+/** Slot codes as `supabase/migrations/0004_demo_data.sql` writes them, named once. */
 export const LAND_TITLE_SLOT = 'land_title';
 export const TAX_RETURN_SLOT = 'tax_return_2024';
 export const FINANCIAL_STATEMENTS_SLOT = 'financial_statements';

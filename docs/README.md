@@ -8,6 +8,7 @@ look, and this folder says how to work on it.
 | `01-local-development.md` | The containerized local-first loop, with measured validation and the commands |
 | `02-browser-testing.md` | Browser automation plan: system, functional and visual checks |
 | `03-agent-scopes.md` | Who owns which paths, who waits for whom, and how many agents help |
+| `04-demo-accounts.md` | The three demo logins, what each one is there to show, and why registration is closed |
 
 The rules these implement are in `../CLAUDE.md` - **Local-first development**,
 **Test-driven development**, and **Working as one of several agents**.
