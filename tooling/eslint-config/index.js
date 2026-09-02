@@ -40,6 +40,7 @@ export default [
       '**/dist/**',
       '**/.angular/**',
       '**/.turbo/**',
+      '**/.vercel/**',
       '**/coverage/**',
       '**/node_modules/**',
       'supabase/.temp/**',
