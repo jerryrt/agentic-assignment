@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": { "analytics": false },
+  "projects": {
+    "ui": {
+      "projectType": "library",
+      "root": "",
+      "sourceRoot": "src",
+      "architect": {
+        // Nothing consumes this target. It exists because
+        // @angular/build:unit-test reads the browser build's options -- the
+        // TypeScript program, the polyfills, the output target -- from a build
+        // target, and refuses to start without one. packages/ui is consumed as
+        // TypeScript source (plan/01-architecture.md) and is never bundled on
+        // its own; apps/web compiles it as part of its own build.
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "src/index.ts",
+            "tsConfig": "tsconfig.json",
+            "outputPath": "dist"
+          },
+          "configurations": { "development": { "optimization": false } }
+        },
+        // The same builder and the same runner apps/web tests with. Two Angular
+        // test setups that work differently is a smell; one is a convention.
+        // It matters more here than it looks: signal inputs are compiled, not
+        // reflected, so a JIT runner would silently drop every [input] binding
+        // and the render tests would pass against components with no inputs.
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": { "tsConfig": "tsconfig.spec.json" }
+        }
+      }
+    }
+  }
+}

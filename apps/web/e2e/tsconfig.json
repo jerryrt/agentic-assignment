@@ -1,0 +1,34 @@
+/* The browser suite's own compiler settings.
+ *
+ * The suite is Node code, not Angular code: it runs in the Playwright runner
+ * process and drives a browser from outside, so it extends the node contract
+ * rather than the angular one, and it must not be swept into
+ * apps/web/tsconfig.app.json where it would be compiled into the bundle.
+ *
+ * NOT WIRED TO A SCRIPT YET, and worth knowing: apps/web's typecheck task is
+ * `tsc -p tsconfig.app.json` and its lint task is `eslint src`, so nothing in
+ * this directory is currently type-checked or linted by `pnpm typecheck` or
+ * `pnpm lint`. Both files belong to the platform scope, not to qa. Wiring is one
+ * reference in apps/web/tsconfig.json and one path in the lint script; until
+ * then this config is what makes `tsc --noEmit -p apps/web/e2e` work by hand.
+ */
+{
+  "extends": "@lj/tsconfig/node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    /* Playwright transpiles each file in isolation with esbuild, exactly as
+       Vitest does elsewhere in the repo, so the isolatedModules assumptions in
+       the base config hold here too. */
+    "types": ["node"],
+    /* DOM is here for one reason: the body of a page.evaluate() callback is
+       serialised and run inside the browser, so it legitimately reaches for
+       `window` and `document` from a file the runner executes in Node. Nothing
+       else in this directory may touch them, and a reviewer should treat a DOM
+       global outside an evaluate() callback as a mistake. */
+    "lib": ["ES2023", "DOM"]
+  },
+  /* The config file is included deliberately: it is part of this scope and a
+     type error in it fails the run before a single test starts. */
+  "include": ["**/*.ts", "../../../playwright.config.ts"],
+  "exclude": [".artifacts", ".auth"]
+}

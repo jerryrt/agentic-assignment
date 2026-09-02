@@ -12,12 +12,18 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:container": "apps/web/e2e/run-in-container.sh",
     "workflow:gen": "pnpm --filter @lj/workflow run gen",
     "workflow:check": "pnpm --filter @lj/workflow run gen:check",
+    "tokens:gen": "pnpm --filter @lj/ui run gen",
+    "tokens:check": "pnpm --filter @lj/ui run gen:check",
     "db:reset": "supabase db reset"
   },
   "devDependencies": {
     "@lj/eslint-config": "workspace:*",
+    "@playwright/test": "1.62.1",
     "eslint": "10.9.1",
     "turbo": "2.10.12",
     "typescript": "6.0.3"

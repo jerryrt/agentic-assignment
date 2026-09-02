@@ -5,5 +5,41 @@
 <p>Serverless API for the Landjourney assignment. There is nothing to see at
 the root; the routes live under <code>/api</code>.</p>
 <ul>
-  <li><a href="/api/health">/api/health</a> - liveness, environment and commit</li>
+  <li><a href="/api/health">GET /api/health</a> - liveness, environment and commit</li>
+  <li><code>POST /api/transition</code> - move a workflow state machine</li>
 </ul>
+<p>Reads go straight to Supabase under row-level security. Writes that move a
+state machine come here, because a transition has to be adjudicated somewhere
+the client cannot lie.</p>
+
+<h2>POST /api/transition</h2>
+<p>Requires <code>Authorization: Bearer &lt;supabase access token&gt;</code>.
+The actor's role is read from their profile, server-side; a role in the body is
+not carried past the parser.</p>
+<pre><code>{
+  "machine": "application",
+  "subjectId": "&lt;uuid&gt;",
+  "event": "request_docs",
+  "expectedRevision": 3
+}</code></pre>
+<p>200 answers with <code>ok</code>, <code>machine</code>,
+<code>subjectId</code>, <code>event</code>, <code>from</code>, <code>to</code>,
+<code>revision</code>, <code>actorRole</code>, <code>effects</code> and the
+subject's <code>events</code>. Every other status answers with
+<code>ok: false</code>, a <code>code</code>, a <code>reason</code>, a
+<code>blockers</code> list of rule results, and the subject's current
+<code>state</code> and <code>revision</code> where they are known.</p>
+<table>
+  <tr><th>Status</th><th>code</th><th>Means</th></tr>
+  <tr><td>400</td><td>invalid_request</td><td>The body, machine, event, subject id or revision did not parse.</td></tr>
+  <tr><td>401</td><td>unauthenticated</td><td>No bearer token, or one the auth server does not recognise.</td></tr>
+  <tr><td>403</td><td>no_profile</td><td>Authenticated, but with no profile row and therefore no role.</td></tr>
+  <tr><td>403</td><td>role_not_permitted</td><td>The transition exists, but not for this actor's role.</td></tr>
+  <tr><td>404</td><td>subject_not_found</td><td>No such subject, or none this caller could have read.</td></tr>
+  <tr><td>409</td><td>state_conflict</td><td>Nothing leaves the subject's current state on that event.</td></tr>
+  <tr><td>409</td><td>revision_conflict</td><td>The subject moved under the caller. Refetch and retry.</td></tr>
+  <tr><td>422</td><td>guard_refused</td><td>A guard said no. <code>blockers</code> says why.</td></tr>
+  <tr><td>500</td><td>event_log_write_failed</td><td>The state moved but its audit entry did not land.</td></tr>
+  <tr><td>501</td><td>machine_not_persisted</td><td>A real machine whose subjects have no table yet.</td></tr>
+  <tr><td>501</td><td>effect_not_implemented</td><td>The transition declares an effect this API cannot carry out.</td></tr>
+</table>

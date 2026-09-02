@@ -7,10 +7,16 @@
     "node": "24.x"
   },
   "scripts": {
-    "dev": "node --watch dev/local-server.ts",
+    "dev": "node --import ./dev/ts-source-resolution.ts --watch dev/local-server.ts",
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lj/db": "workspace:*",
+    "@lj/domain": "workspace:*",
+    "@lj/rules": "workspace:*",
+    "@lj/workflow": "workspace:*"
   },
   "devDependencies": {
     "@lj/tsconfig": "workspace:*",

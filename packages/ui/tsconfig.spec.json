@@ -1,0 +1,11 @@
+{
+  // The program the unit-test builder compiles: the library plus its specs.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Vitest's globals, opted into by name. tooling/tsconfig/base.json leaves
+    // "types" empty on purpose so no @types package is ambient.
+    "types": ["vitest/globals"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

@@ -1,0 +1,7 @@
+{
+  // The token emitter runs on Node and reads a file, so it needs the platform
+  // types the library must never see. Separating the programs is what keeps
+  // node:fs out of anything a browser loads.
+  "extends": "@lj/tsconfig/node.json",
+  "include": ["tools"]
+}

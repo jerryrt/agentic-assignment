@@ -1,0 +1,81 @@
+/*
+ * Fieldwork -- the runtime colour contract.
+ *
+ * GENERATED from design/tokens.json by packages/ui/tools/generate-tokens.sh.
+ * Never hand-edit: `pnpm tokens:check` fails the build when this file and
+ * the JSON disagree. Change the JSON and run `pnpm tokens:gen`.
+ *
+ * The light palette is defined on bare :root so that no token has its only
+ * definition inside a media query. Dark is then redefined twice -- once for
+ * the system preference, once for an explicit choice -- so that a stored
+ * override wins in both directions (design/00-foundations.md).
+ */
+
+:root {
+  --lj-bg: #FFFFFF;
+  --lj-surface: #F4F7F5;
+  --lj-raised: #FFFFFF;
+  --lj-border: #DBE3DD;
+  --lj-border-strong: #849A8D;
+  --lj-text: #0F1D16;
+  --lj-muted: #55665C;
+  --lj-primary: #0B6A6E;
+  --lj-primary-hover: #085458;
+  --lj-on-primary: #FFFFFF;
+  --lj-primary-subtle: #DFF0F1;
+  --lj-ok: #0F7A4A;
+  --lj-warn: #9A6206;
+  --lj-err: #B3261E;
+  --lj-unknown: #55665C;
+  --lj-ok-subtle: #E1F3EA;
+  --lj-warn-subtle: #FBF0DC;
+  --lj-err-subtle: #FBE9E7;
+  --lj-unknown-subtle: #EDF1EE;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --lj-bg: #0A1210;
+    --lj-surface: #121C18;
+    --lj-raised: #1A2721;
+    --lj-border: #22322B;
+    --lj-border-strong: #5A7166;
+    --lj-text: #E6EFE9;
+    --lj-muted: #93A79B;
+    --lj-primary: #45BFC0;
+    --lj-primary-hover: #67CFD0;
+    --lj-on-primary: #03201F;
+    --lj-primary-subtle: #0D3033;
+    --lj-ok: #4FC28C;
+    --lj-warn: #E0A93B;
+    --lj-err: #F08A82;
+    --lj-unknown: #93A79B;
+    --lj-ok-subtle: #123227;
+    --lj-warn-subtle: #2D2615;
+    --lj-err-subtle: #301B1A;
+    --lj-unknown-subtle: #29392F;
+  }
+}
+
+:root[data-theme="dark"] {
+  --lj-bg: #0A1210;
+  --lj-surface: #121C18;
+  --lj-raised: #1A2721;
+  --lj-border: #22322B;
+  --lj-border-strong: #5A7166;
+  --lj-text: #E6EFE9;
+  --lj-muted: #93A79B;
+  --lj-primary: #45BFC0;
+  --lj-primary-hover: #67CFD0;
+  --lj-on-primary: #03201F;
+  --lj-primary-subtle: #0D3033;
+  --lj-ok: #4FC28C;
+  --lj-warn: #E0A93B;
+  --lj-err: #F08A82;
+  --lj-unknown: #93A79B;
+  --lj-ok-subtle: #123227;
+  --lj-warn-subtle: #2D2615;
+  --lj-err-subtle: #301B1A;
+  --lj-unknown-subtle: #29392F;
+}

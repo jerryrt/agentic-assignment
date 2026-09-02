@@ -1,0 +1,64 @@
+// Fieldwork -- the build-time colour contract for Angular Material.
+//
+// GENERATED from design/tokens.json by packages/ui/tools/generate-tokens.sh.
+// Never hand-edit: `pnpm tokens:check` fails the build when this file and
+// the JSON disagree. Change the JSON and run `pnpm tokens:gen`.
+//
+// Components must not read these maps. They read the CSS variables in
+// _tokens.css, which follow the colour scheme at runtime; a Sass value is
+// resolved once at build time and would freeze the light palette into the
+// stylesheet. This file exists for mat.theme, which cannot read a variable.
+
+$lj-light: (
+  'bg': #FFFFFF,
+  'surface': #F4F7F5,
+  'raised': #FFFFFF,
+  'border': #DBE3DD,
+  'border-strong': #849A8D,
+  'text': #0F1D16,
+  'muted': #55665C,
+  'primary': #0B6A6E,
+  'primary-hover': #085458,
+  'on-primary': #FFFFFF,
+  'primary-subtle': #DFF0F1,
+  'ok': #0F7A4A,
+  'warn': #9A6206,
+  'err': #B3261E,
+  'unknown': #55665C,
+  'ok-subtle': #E1F3EA,
+  'warn-subtle': #FBF0DC,
+  'err-subtle': #FBE9E7,
+  'unknown-subtle': #EDF1EE,
+);
+
+$lj-dark: (
+  'bg': #0A1210,
+  'surface': #121C18,
+  'raised': #1A2721,
+  'border': #22322B,
+  'border-strong': #5A7166,
+  'text': #E6EFE9,
+  'muted': #93A79B,
+  'primary': #45BFC0,
+  'primary-hover': #67CFD0,
+  'on-primary': #03201F,
+  'primary-subtle': #0D3033,
+  'ok': #4FC28C,
+  'warn': #E0A93B,
+  'err': #F08A82,
+  'unknown': #93A79B,
+  'ok-subtle': #123227,
+  'warn-subtle': #2D2615,
+  'err-subtle': #301B1A,
+  'unknown-subtle': #29392F,
+);
+
+$lj-schemes: (
+  'light': $lj-light,
+  'dark': $lj-dark,
+);
+
+// M3 source colours. See design/01-theme.md.
+$lj-primary-source: #0B6A6E;
+$lj-tertiary-source: #0F7A4A;
+$lj-error-source: #B3261E;
