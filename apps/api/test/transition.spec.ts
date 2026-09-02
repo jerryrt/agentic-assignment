@@ -1,4 +1,4 @@
-// The transition endpoint, probed against a real database.
+// The endpoints, probed against a real database.
 //
 // Every assertion below runs the exported handler exactly as the Vercel runtime
 // does -- hand it a `Request`, inspect the `Response` -- against the local
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   createAnonClient,
+  insertDocumentUpload,
   listEligibilitySnapshots,
   listWorkflowEvents,
   type EligibilitySnapshot,
@@ -33,9 +34,13 @@ import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { runEffects } from '../lib/effects.ts';
+import { POST as DOWNLOAD_URL } from '../src/routes/documents-download-url.ts';
+import { POST as UPLOAD_URL } from '../src/routes/documents-upload-url.ts';
 import { POST } from '../src/routes/transition.ts';
 
 const TRANSITION_URL = 'https://lj-api.example/api/transition';
+const UPLOAD_URL_URL = 'https://lj-api.example/api/documents/upload-url';
+const DOWNLOAD_URL_URL = 'https://lj-api.example/api/documents/download-url';
 
 // `supabase status` resolves supabase/config.toml relative to its working
 // directory, and vitest runs with the package directory as cwd.
@@ -102,6 +107,25 @@ async function post(token: string | null, body: unknown): Promise<Answer> {
     payload: (parsed ?? {}) as Record<string, unknown>,
     raw,
   };
+}
+
+/** The document routes answer in the same shape, so one caller serves both. */
+async function postTo(
+  handler: (request: Request) => Promise<Response>,
+  url: string,
+  token: string | null,
+  body: unknown,
+): Promise<Answer> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (token !== null) {
+    headers['authorization'] = `Bearer ${token}`;
+  }
+  const response = await handler(
+    new Request(url, { method: 'POST', headers, body: JSON.stringify(body) }),
+  );
+  const raw = await response.text();
+  const parsed: unknown = raw === '' ? {} : JSON.parse(raw);
+  return { status: response.status, payload: (parsed ?? {}) as Record<string, unknown>, raw };
 }
 
 function blockersOf(answer: Answer): unknown[] {
@@ -452,6 +476,10 @@ let appForDecision: string;
 let slotToAccept: string;
 let slotToReject: string;
 let slotUntouched: string;
+/** extracted, so no file may be added while the lender is deciding. */
+let slotAwaitingDecision: string;
+/** Every object this run put in the bucket, removed in afterAll. */
+const storedObjects: string[] = [];
 /** submitted, org alpha, naming a product whose document pack does not parse. */
 let appUnreadablePack: string;
 
@@ -674,7 +702,7 @@ beforeAll(async () => {
       }),
     ]);
 
-  [slotToAccept, slotToReject, slotUntouched] = await Promise.all([
+  [slotToAccept, slotToReject, slotUntouched, slotAwaitingDecision] = await Promise.all([
     insertSlot({
       applicationId: appForDecision,
       code: 'land_title',
@@ -692,6 +720,12 @@ beforeAll(async () => {
       code: 'id_verification',
       label: 'Photo identification',
       state: 'required',
+    }),
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      state: 'extracted',
     }),
   ]);
 }, 60_000);
@@ -736,6 +770,11 @@ afterAll(async () => {
     .update({ org_id: null })
     .in('id', [lender.id, foreignLender.id]);
   await service.from('organisation').delete().in('id', [orgAlpha, orgBeta]);
+  // Objects outlive their rows: deleting an application cascades to
+  // document_upload but says nothing about the bucket.
+  if (storedObjects.length > 0) {
+    await service.storage.from('documents').remove(storedObjects);
+  }
 }, 60_000);
 
 // Assertions ---------------------------------------------------------------
@@ -1513,6 +1552,205 @@ describe('moving a document slot', () => {
     expect(answer.payload['code']).toBe('revision_conflict');
     expect(currentOf(answer)).toMatchObject({ state: 'accepted', revision: 1 });
     expect(await readSlot(slotToAccept)).toEqual({ state: 'accepted', revision: 1 });
+  });
+});
+
+// The bytes never pass through this API. What it decides is that a write may
+// happen, and WHERE -- the path is minted here from the slot this server
+// loaded, so a caller cannot choose which application's folder to write into.
+describe('issuing a signed upload url', () => {
+  const PDF = 'application/pdf';
+
+  it('mints the path itself, from the slot rather than from the request', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: 'id_smith-farms.pdf',
+      mime: PDF,
+      bytes: 24_000,
+      // Offered, and ignored. A client-supplied path is a client choosing
+      // whose folder to write into, so the field is not read at all.
+      path: `${appForeign}/id_verification/00000000-0000-4000-8000-00000000ffff.pdf`,
+      storagePath: '../../etc/passwd',
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      slotId: slotUntouched,
+      applicationId: appForDecision,
+      bucket: 'documents',
+      event: 'upload',
+      maxBytes: 10_485_760,
+    });
+
+    // <application_id>/<slot_code>/<uuid>.<ext> -- the convention the storage
+    // policy reads, with the extension derived from the type and not from the
+    // caller's filename.
+    const path = String(answer.payload['path']);
+    expect(path).toMatch(
+      new RegExp(
+        `^${appForDecision}/id_verification/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.pdf$`,
+      ),
+    );
+    expect(path.startsWith(appForeign)).toBe(false);
+    expect(typeof answer.payload['token']).toBe('string');
+    expect(String(answer.payload['signedUrl']).length).toBeGreaterThan(0);
+  });
+
+  it('hides a slot on an application the caller does not own', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, otherBorrower.token, {
+      slotId: slotUntouched,
+      filename: 'id.pdf',
+      mime: PDF,
+      bytes: 1_000,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  // The lender decides about documents; the borrower supplies them. Read off
+  // the machine, so this route cannot disagree with the transition endpoint.
+  it('refuses a lender asking for somewhere to put a file', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, lender.token, {
+      slotId: slotUntouched,
+      filename: 'id.pdf',
+      mime: PDF,
+      bytes: 1_000,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+  });
+
+  it('refuses a file larger than the policy allows', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: 'huge.pdf',
+      mime: PDF,
+      bytes: 10_485_761,
+    });
+
+    expect(answer.status).toBe(413);
+    expect(answer.payload['code']).toBe('upload_too_large');
+  });
+
+  it('refuses a type the bucket does not hold', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: 'accounts.xlsx',
+      mime: 'application/vnd.ms-excel',
+      bytes: 4_000,
+    });
+
+    expect(answer.status).toBe(415);
+    expect(answer.payload['code']).toBe('upload_type_not_accepted');
+  });
+
+  it('refuses a slot that is waiting on a decision', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotAwaitingDecision,
+      filename: 'again.pdf',
+      mime: PDF,
+      bytes: 4_000,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+  });
+
+  it('refuses a request that names no file', async () => {
+    const answer = await postTo(UPLOAD_URL, UPLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      filename: '../../secrets/id.pdf',
+      mime: PDF,
+      bytes: 1_000,
+    });
+
+    expect(answer.status).toBe(400);
+    expect(String(answer.payload['reason'])).toContain('filename');
+  });
+});
+
+// The bucket is private, so a read is a signed url and the API is what decides
+// the caller may have one.
+describe('issuing a signed download url', () => {
+  let uploadId: string;
+  let storagePath: string;
+
+  beforeAll(async () => {
+    storagePath = `${appForDecision}/crop_insurance/${crypto.randomUUID()}.pdf`;
+    const { error } = await service.storage
+      .from('documents')
+      .upload(storagePath, new Blob([new Uint8Array([37, 80, 68, 70])], { type: 'application/pdf' }), {
+        contentType: 'application/pdf',
+      });
+    if (error !== null) {
+      throw new Error(`fixture object failed: ${error.message}`);
+    }
+    storedObjects.push(storagePath);
+
+    const row = await insertDocumentUpload(service, {
+      slot_id: slotAwaitingDecision,
+      storage_path: storagePath,
+      filename: 'crop_insurance_2027-03-01.pdf',
+      bytes: 4,
+      mime: 'application/pdf',
+      extraction_state: 'pending',
+    });
+    if (row === null) {
+      throw new Error('fixture document_upload failed');
+    }
+    uploadId = row.id;
+  }, 30_000);
+
+  it('issues one to the borrower whose file it is', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, borrower.token, {
+      slotId: slotAwaitingDecision,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      uploadId,
+      filename: 'crop_insurance_2027-03-01.pdf',
+      expiresInSeconds: 300,
+    });
+    // Signed, and pointing at the object the row names.
+    expect(String(answer.payload['url'])).toContain('token=');
+    expect(String(answer.payload['url'])).toContain(storagePath);
+  });
+
+  it('issues one to a lender at the receiving organisation', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, lender.token, {
+      slotId: slotAwaitingDecision,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(200);
+  });
+
+  it('refuses a lender at another organisation', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, foreignLender.token, {
+      slotId: slotAwaitingDecision,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  // The upload is read THROUGH the slot whose audience was checked, so an
+  // upload named with somebody else's slot is answered as absent rather than
+  // signed for.
+  it('refuses an upload that does not belong to the named slot', async () => {
+    const answer = await postTo(DOWNLOAD_URL, DOWNLOAD_URL_URL, borrower.token, {
+      slotId: slotUntouched,
+      uploadId,
+    });
+
+    expect(answer.status).toBe(404);
   });
 });
 

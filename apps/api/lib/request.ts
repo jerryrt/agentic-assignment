@@ -1,6 +1,6 @@
 /**
- * The trust boundary. Nothing in this endpoint may read the request body
- * except through this file.
+ * The trust boundary. Nothing in this API may read a request body except
+ * through this file.
  *
  * CLAUDE.md section 10: every input is parsed with a schema from packages/domain
  * before anything else, and a client-supplied state, role or amount is never
@@ -22,6 +22,7 @@
 
 import {
   ApplicationSchema,
+  DocumentUploadSchema,
   NonEmptyTextSchema,
   UuidSchema,
   WorkflowMachineSchema,
@@ -136,4 +137,151 @@ export function parseTransitionRequest(body: unknown): TransitionRequestParse {
       expectedRevision: revisionParse.data,
     },
   };
+}
+
+/* -------------------------------------------------------------------------
+ * The document routes
+ * ---------------------------------------------------------------------- */
+
+/**
+ * A filename is a LABEL, and it is the only thing a caller contributes to an
+ * upload.
+ *
+ * It never locates anything: the object key is minted by the server from the
+ * slot it loaded (see lib/storage.ts), so a filename cannot choose a folder, an
+ * extension or an existing object. What it does do is get stored and shown back
+ * to two people, and -- for the stub extractor -- read for what it says about
+ * the document.
+ *
+ * So it is validated as a leaf name and nothing more. A separator would make it
+ * look like a path in a UI that displays it; a control character or a NUL would
+ * make it something else again in a log; and 200 characters is more than any
+ * real name and less than a body worth storing.
+ */
+const MAX_FILENAME_LENGTH = 200;
+
+export function parseUploadFilename(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const filename = value.trim();
+  if (filename === '' || filename.length > MAX_FILENAME_LENGTH) {
+    return null;
+  }
+  if (filename === '.' || filename === '..') {
+    return null;
+  }
+  // eslint-disable-next-line no-control-regex -- rejecting them is the point
+  if (/[/\\\u0000-\u001f\u007f]/.test(filename)) {
+    return null;
+  }
+  return filename;
+}
+
+export interface UploadUrlRequest {
+  readonly slotId: string;
+  readonly filename: string;
+  readonly mime: string;
+  readonly bytes: number;
+}
+
+export type UploadUrlRequestParse =
+  | { readonly ok: true; readonly request: UploadUrlRequest }
+  | { readonly ok: false; readonly problems: readonly string[] };
+
+/**
+ * What a browser must say to be given somewhere to put a file.
+ *
+ * `bytes` and `mime` describe the file the caller is about to send, and both
+ * are checked against the policy by the route rather than here: a file that is
+ * too large or of the wrong type is a refusal with its own status code, not a
+ * malformed request. What this function decides is only whether the four fields
+ * are the shape they claim to be.
+ *
+ * `bytes` takes its definition from the column that stores it, so the API and
+ * the row cannot disagree about what a size is.
+ */
+const UploadBytesSchema = DocumentUploadSchema.shape.bytes;
+
+export function parseUploadUrlRequest(body: unknown): UploadUrlRequestParse {
+  if (!isRecord(body)) {
+    return { ok: false, problems: ['the request body must be a JSON object'] };
+  }
+
+  const problems: string[] = [];
+
+  const slot = UuidSchema.safeParse(body['slotId']);
+  if (!slot.success) {
+    problems.push('slotId must be a uuid');
+  }
+
+  const filename = parseUploadFilename(body['filename']);
+  if (filename === null) {
+    problems.push(
+      'filename must be a leaf name: no separators, no control characters, at most ' +
+        String(MAX_FILENAME_LENGTH) +
+        ' characters',
+    );
+  }
+
+  const mime = NonEmptyTextSchema.safeParse(body['mime']);
+  if (!mime.success) {
+    problems.push('mime must be a non-empty string');
+  }
+
+  const bytes = UploadBytesSchema.safeParse(body['bytes']);
+  if (!bytes.success) {
+    problems.push('bytes must be the positive integer size of the file');
+  }
+
+  if (!slot.success || filename === null || !mime.success || !bytes.success) {
+    return { ok: false, problems };
+  }
+  return {
+    ok: true,
+    request: {
+      slotId: slot.data,
+      filename,
+      mime: mime.data,
+      bytes: bytes.data,
+    },
+  };
+}
+
+export interface DownloadUrlRequest {
+  readonly slotId: string;
+  readonly uploadId: string;
+}
+
+export type DownloadUrlRequestParse =
+  | { readonly ok: true; readonly request: DownloadUrlRequest }
+  | { readonly ok: false; readonly problems: readonly string[] };
+
+/**
+ * Both ids, and no path.
+ *
+ * The caller names the record it wants to read and the server looks up where
+ * that record's bytes are. Accepting a path instead would let a caller ask for
+ * any object in the bucket and rely on this code to decide whether they may
+ * have it -- which is the same mistake in the other direction.
+ */
+export function parseDownloadUrlRequest(body: unknown): DownloadUrlRequestParse {
+  if (!isRecord(body)) {
+    return { ok: false, problems: ['the request body must be a JSON object'] };
+  }
+
+  const problems: string[] = [];
+  const slot = UuidSchema.safeParse(body['slotId']);
+  if (!slot.success) {
+    problems.push('slotId must be a uuid');
+  }
+  const upload = UuidSchema.safeParse(body['uploadId']);
+  if (!upload.success) {
+    problems.push('uploadId must be a uuid');
+  }
+
+  if (!slot.success || !upload.success) {
+    return { ok: false, problems };
+  }
+  return { ok: true, request: { slotId: slot.data, uploadId: upload.data } };
 }

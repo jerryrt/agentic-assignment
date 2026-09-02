@@ -19,7 +19,7 @@ import { createAnonClientForAccessToken, getProfile, type DatabaseClient } from 
 import { AppRoleSchema, UuidSchema, type AppRole } from '@lj/domain';
 
 import type { ApiEnvironment } from './environment.ts';
-import type { TransitionFailureCode } from './http.ts';
+import type { ApiFailureCode } from './http.ts';
 
 export interface Actor {
   readonly id: string;
@@ -35,7 +35,7 @@ export type ActorResult =
   | {
       readonly ok: false;
       readonly status: number;
-      readonly code: TransitionFailureCode;
+      readonly code: ApiFailureCode;
       readonly reason: string;
     };
 

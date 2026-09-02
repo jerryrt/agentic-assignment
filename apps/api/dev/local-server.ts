@@ -18,12 +18,16 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
+import { POST as DOWNLOAD_URL } from '../src/routes/documents-download-url.ts';
+import { POST as UPLOAD_URL } from '../src/routes/documents-upload-url.ts';
 import { GET } from '../src/routes/health.ts';
 import { POST } from '../src/routes/transition.ts';
 
 const DEFAULT_PORT = 3001;
 const HEALTH_PATH = '/api/health';
 const TRANSITION_PATH = '/api/transition';
+const UPLOAD_URL_PATH = '/api/documents/upload-url';
+const DOWNLOAD_URL_PATH = '/api/documents/download-url';
 
 /**
  * The deployed runtime hands the handler a web `Request`; `node:http` deals in
@@ -81,6 +85,12 @@ async function route(request: Request): Promise<Response> {
   if (request.method === 'POST' && path === TRANSITION_PATH) {
     return await POST(request);
   }
+  if (request.method === 'POST' && path === UPLOAD_URL_PATH) {
+    return await UPLOAD_URL(request);
+  }
+  if (request.method === 'POST' && path === DOWNLOAD_URL_PATH) {
+    return await DOWNLOAD_URL(request);
+  }
   return notFound();
 }
 
@@ -102,4 +112,6 @@ server.listen(port, () => {
   console.log(`lj-api listening on http://localhost:${port}`);
   console.log(`  GET  ${HEALTH_PATH}`);
   console.log(`  POST ${TRANSITION_PATH}`);
+  console.log(`  POST ${UPLOAD_URL_PATH}`);
+  console.log(`  POST ${DOWNLOAD_URL_PATH}`);
 });
