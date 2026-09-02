@@ -24,7 +24,11 @@
 
 import { getDocumentSlot, updateDocumentSlot, type DatabaseClient } from '@lj/db';
 import { DocumentSlotSchema, type DocumentSlotState } from '@lj/domain';
-import { DOCUMENT_SLOT_EVENTS, type DocumentSlotEvent } from '@lj/workflow';
+import {
+  DOCUMENT_SLOT_EVENTS,
+  type DocumentSlotEvent,
+  type EffectSpec,
+} from '@lj/workflow';
 
 import type { SubjectSnapshot } from './http.ts';
 
@@ -92,6 +96,28 @@ export function asDocumentSlotEvent(event: string): DocumentSlotEvent | null {
  * pack.
  */
 export const NO_DOCUMENT_SLOT_CRITERIA: Readonly<Record<string, never>> = {};
+
+/**
+ * What a slot transition does besides moving the state.
+ *
+ * ATTACHED HERE, NOT DECLARED ON THE MACHINE, and only because
+ * `packages/workflow/src/machines/document-slot.ts` belongs to another issue's
+ * scope -- #42 owns `machines/application.ts` and `types.ts` alone. The kind
+ * itself lives in `types.ts` with the rest of the vocabulary, so nothing here
+ * invents an effect; this function only says which events carry it.
+ *
+ * It is a temporary home and it is written to be deleted: adding
+ * `effects: [{ kind: 'extract_document' }]` to `upload` and `replace` in that
+ * machine makes the declared list non-empty, the caller prefers the declared
+ * list, and this function stops being consulted. The runner does not move.
+ *
+ * Why those two events and no others: a file arriving is the only thing that
+ * gives an extractor something to read. `accept`, `reject` and `extract` are
+ * decisions about a document that has already been read.
+ */
+export function documentSlotEffects(event: DocumentSlotEvent): readonly EffectSpec[] {
+  return event === 'upload' || event === 'replace' ? [{ kind: 'extract_document' }] : [];
+}
 
 export interface SlotAdvanceRequest {
   readonly slotId: string;

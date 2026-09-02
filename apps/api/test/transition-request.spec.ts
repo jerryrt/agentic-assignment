@@ -85,9 +85,29 @@ describe('parseTransitionRequest', () => {
     expect(Object.keys(parsed.request).sort()).toEqual([
       'event',
       'expectedRevision',
+      'filename',
       'machine',
       'subjectId',
     ]);
+  });
+
+  /**
+   * `filename` is the one thing a caller contributes to an upload, and it is a
+   * LABEL: the object key is minted by the server and rediscovered by the
+   * server, so a filename cannot choose a folder or name an existing object.
+   * It is still validated as a leaf name, because it is stored, shown back to
+   * two people and read by the extractor.
+   */
+  it('accepts a filename, and only as a leaf name', () => {
+    const named = parseTransitionRequest({ ...wellFormed(), filename: 'deed_1240ac.pdf' });
+    expect(named.ok === true && named.request.filename).toBe('deed_1240ac.pdf');
+
+    const absent = parseTransitionRequest(wellFormed());
+    expect(absent.ok === true && absent.request.filename).toBeNull();
+
+    for (const filename of ['../../etc/passwd', 'a/b.pdf', 'a\\b.pdf', '', '.', 'x'.repeat(201)]) {
+      expect(problems({ ...wellFormed(), filename }).join(' ')).toContain('filename');
+    }
   });
 
   it('rejects a body that is not an object', () => {

@@ -387,6 +387,74 @@ async function readSlot(slotId: string): Promise<{ state: string; revision: numb
   return { state: data.state, revision: data.revision };
 }
 
+async function readUploads(slotId: string): Promise<
+  {
+    id: string;
+    storage_path: string;
+    filename: string;
+    mime: string;
+    bytes: number;
+    extraction_state: string;
+    extracted: Json;
+  }[]
+> {
+  const { data, error } = await service
+    .from('document_upload')
+    .select('id, storage_path, filename, mime, bytes, extraction_state, extracted')
+    .eq('slot_id', slotId)
+    .order('uploaded_at', { ascending: false });
+  if (error !== null || data === null) {
+    throw new Error(`could not read uploads of ${slotId}: ${error?.message ?? 'no rows'}`);
+  }
+  return data;
+}
+
+function extractedField(
+  row: { extracted: Json },
+  field: string,
+): { value: unknown; confidence_basis_points: number; source: string } | undefined {
+  const extracted = row.extracted as Record<string, unknown> | null;
+  const value = extracted?.[field];
+  return value as
+    | { value: unknown; confidence_basis_points: number; source: string }
+    | undefined;
+}
+
+/**
+ * The whole round trip a browser makes: ask for somewhere to put the file, PUT
+ * the bytes straight to storage on the signed url, and fire the transition.
+ *
+ * The bytes go through an ANON client, because that is what the browser has.
+ * The API never sees them.
+ */
+async function uploadFile(
+  token: string,
+  slotId: string,
+  filename: string,
+): Promise<{ path: string; issued: Answer }> {
+  const issued = await postTo(UPLOAD_URL, UPLOAD_URL_URL, token, {
+    slotId,
+    filename,
+    mime: 'application/pdf',
+    bytes: 4,
+  });
+  if (issued.status !== 200) {
+    throw new Error(`upload url refused: ${issued.raw}`);
+  }
+  const path = String(issued.payload['path']);
+  const anon = createAnonClient({ url: stack.url, anonKey: stack.anonKey });
+  const { error } = await anon.storage
+    .from('documents')
+    .uploadToSignedUrl(path, String(issued.payload['token']), new Blob([new Uint8Array([37, 80, 68, 70])], { type: 'application/pdf' }), {
+      contentType: 'application/pdf',
+    });
+  if (error !== null) {
+    throw new Error(`uploadToSignedUrl failed: ${error.message}`);
+  }
+  storedObjects.push(path);
+  return { path, issued };
+}
+
 async function slotEventCount(slotId: string): Promise<number> {
   return (await listWorkflowEvents(service, 'document_slot', slotId)).length;
 }
@@ -478,6 +546,11 @@ let slotToReject: string;
 let slotUntouched: string;
 /** extracted, so no file may be added while the lender is deciding. */
 let slotAwaitingDecision: string;
+/** docs_pending, org alpha. The end-to-end upload; its bucket folder is used. */
+let appForUpload: string;
+let slotForFullRead: string;
+let slotForPartialRead: string;
+let slotWithNoFile: string;
 /** Every object this run put in the bucket, removed in afterAll. */
 const storedObjects: string[] = [];
 /** submitted, org alpha, naming a product whose document pack does not parse. */
@@ -605,6 +678,7 @@ beforeAll(async () => {
     appUnreadablePack,
     appForPack,
     appForDecision,
+    appForUpload,
   ] = await Promise.all([
       // Every application that reaches `submitted` carries the payload that
       // took it there: `request_docs` reads the pack off the product the
@@ -700,6 +774,13 @@ beforeAll(async () => {
         revision: DOCS_PENDING_REVISION,
         data: completePayload(productAlpha),
       }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
     ]);
 
   [slotToAccept, slotToReject, slotUntouched, slotAwaitingDecision] = await Promise.all([
@@ -726,6 +807,29 @@ beforeAll(async () => {
       code: 'crop_insurance',
       label: 'Crop insurance certificate',
       state: 'extracted',
+    }),
+  ]);
+
+  [slotForFullRead, slotForPartialRead, slotWithNoFile] = await Promise.all([
+    insertSlot({
+      applicationId: appForUpload,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'required',
+      extractRequired: ['total_acres', 'owner_name'],
+    }),
+    insertSlot({
+      applicationId: appForUpload,
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      state: 'required',
+      extractRequired: ['net_farm_income'],
+    }),
+    insertSlot({
+      applicationId: appForUpload,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'required',
     }),
   ]);
 }, 60_000);
@@ -761,6 +865,7 @@ afterAll(async () => {
       appUnreadablePack,
       appForPack,
       appForDecision,
+      appForUpload,
     ]);
   // document_slot and document_upload rows go with their application, by the
   // cascades in 0006_documents.sql.
@@ -1191,6 +1296,8 @@ describe('requesting documents generates the pack', () => {
           extractRequired: ['total_acres', 'owner_name'],
         },
       ],
+      slot: null,
+      upload: null,
     });
 
     expect(outcome.ok).toBe(true);
@@ -1539,19 +1646,21 @@ describe('moving a document slot', () => {
     expect(currentOf(answer)).toMatchObject({ state: 'required', revision: 0 });
   });
 
+  // The same optimistic concurrency the application uses, on a second table:
+  // two lenders accepting one document serialise rather than race.
   it('answers 409 when the slot moved under the caller', async () => {
-    // slotToAccept is at revision 1 by now, having been accepted above.
-    const answer = await post(borrower.token, {
+    const answer = await post(lender.token, {
       machine: 'document_slot',
-      subjectId: slotToAccept,
-      event: 'replace',
-      expectedRevision: 0,
+      subjectId: slotAwaitingDecision,
+      event: 'accept',
+      expectedRevision: 7,
     });
 
     expect(answer.status).toBe(409);
     expect(answer.payload['code']).toBe('revision_conflict');
-    expect(currentOf(answer)).toMatchObject({ state: 'accepted', revision: 1 });
-    expect(await readSlot(slotToAccept)).toEqual({ state: 'accepted', revision: 1 });
+    expect(currentOf(answer)).toMatchObject({ state: 'extracted', revision: 0 });
+    expect(await readSlot(slotAwaitingDecision)).toEqual({ state: 'extracted', revision: 0 });
+    expect(await slotEventCount(slotAwaitingDecision)).toBe(0);
   });
 });
 
@@ -1752,6 +1861,197 @@ describe('issuing a signed download url', () => {
 
     expect(answer.status).toBe(404);
   });
+});
+
+// Extraction, end to end: the browser asks for somewhere to put a file, PUTs it
+// straight to storage, and fires the transition. The API never sees the bytes
+// and never learns the path from the caller -- it finds the object in the
+// folder it minted the path into.
+describe('uploading a document', () => {
+  it('records the file, reads it, and advances the slot to extracted', async () => {
+    const { path } = await uploadFile(
+      borrower.token,
+      slotForFullRead,
+      'deed_1240ac_smith-farms.pdf',
+    );
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotForFullRead,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'deed_1240ac_smith-farms.pdf',
+    });
+
+    expect(answer.status).toBe(200);
+    // `upload` moves the slot to `uploaded` and the extraction moves it on, so
+    // what the caller is told is where it ended up: a browser told `uploaded`
+    // would render a document as waiting for a read that already happened.
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      machine: 'document_slot',
+      from: 'required',
+      to: 'extracted',
+      revision: 2,
+      effects: ['extract_document'],
+    });
+    expect(await readSlot(slotForFullRead)).toEqual({ state: 'extracted', revision: 2 });
+
+    const uploads = await readUploads(slotForFullRead);
+    expect(uploads.length).toBe(1);
+    expect(uploads[0]).toMatchObject({
+      storage_path: path,
+      filename: 'deed_1240ac_smith-farms.pdf',
+      mime: 'application/pdf',
+      bytes: 4,
+      extraction_state: 'extracted',
+    });
+
+    // The wire shape is the one 0006_documents.sql documents and the browser
+    // reads: snake_case, integer basis points, and a source of 'ocr' or
+    // 'human'. A renamed key fails nothing and makes every field unreadable.
+    const acres = extractedField(uploads[0] as { extracted: Json }, 'total_acres');
+    expect(acres?.value).toBe(1240);
+    expect(acres?.source).toBe('ocr');
+    expect(acres?.confidence_basis_points).toBeGreaterThanOrEqual(7_000);
+    expect(extractedField(uploads[0] as { extracted: Json }, 'owner_name')?.value).toBe(
+      'Smith Farms',
+    );
+
+    // Two moves, two entries. The second has no actor: `extract` is the
+    // platform's own event and no person was behind it.
+    const events = await listWorkflowEvents(service, 'document_slot', slotForFullRead);
+    expect(events.map((event) => event.event)).toEqual(['upload', 'extract']);
+    expect(events[0]).toMatchObject({ actor_id: borrower.id, actor_role: 'borrower' });
+    expect(events[1]).toMatchObject({
+      from_state: 'uploaded',
+      to_state: 'extracted',
+      actor_id: null,
+      actor_role: null,
+    });
+  }, 30_000);
+
+  /**
+   * A partial read is not an error state. The slot still advances; the fields
+   * that were not read become completeness failures with a next action, which
+   * is what the borrower can act on. Refusing to advance would leave the
+   * document in `uploaded` with nothing able to move it.
+   */
+  it('advances the slot on a partial read, and says it was partial', async () => {
+    await uploadFile(borrower.token, slotForPartialRead, 'scan0007.pdf');
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotForPartialRead,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'scan0007.pdf',
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({ to: 'extracted', revision: 2 });
+
+    const uploads = await readUploads(slotForPartialRead);
+    expect(uploads[0]?.extraction_state).toBe('partial');
+    expect(extractedField(uploads[0] as { extracted: Json }, 'net_farm_income')).toBeUndefined();
+  }, 30_000);
+
+  /**
+   * An expiry read off the document is copied onto the slot, because `expired`
+   * is not a state: it is derived from `valid_until` and the clock, and this is
+   * where a document's shelf life enters the system.
+   */
+  it('copies an expiry it read onto the slot', async () => {
+    const slotId = await insertSlot({
+      applicationId: appForUpload,
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      state: 'required',
+      extractRequired: ['valid_until'],
+    });
+    await uploadFile(borrower.token, slotId, 'crop_insurance_2027-03-01.pdf');
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'crop_insurance_2027-03-01.pdf',
+    });
+
+    expect(answer.status).toBe(200);
+    const { data } = await service
+      .from('document_slot')
+      .select('valid_until')
+      .eq('id', slotId)
+      .single();
+    expect(data?.valid_until).toBe('2027-03-01');
+  }, 30_000);
+
+  /**
+   * Firing the transition without sending a file must not move the slot. A slot
+   * that said `uploaded` with nothing behind it is a checklist row nobody can
+   * act on: the borrower believes they sent something and the lender has
+   * nothing to open.
+   */
+  it('refuses when no file has been uploaded, and does not move the slot', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotWithNoFile,
+      event: 'upload',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(await readSlot(slotWithNoFile)).toEqual({ state: 'required', revision: 0 });
+    expect(await readUploads(slotWithNoFile)).toEqual([]);
+    expect(await slotEventCount(slotWithNoFile)).toBe(0);
+  });
+
+  // The file is found in the bucket, not named by the caller, so a second
+  // `upload` with no new file would otherwise record the previous one again.
+  it('refuses to record a file it has already recorded', async () => {
+    const slotId = await insertSlot({
+      applicationId: appForUpload,
+      code: 'lien_search',
+      label: 'Personal property lien search',
+      state: 'required',
+    });
+    await uploadFile(borrower.token, slotId, 'lien_search_2026-01-02.pdf');
+
+    const first = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'upload',
+      expectedRevision: 0,
+      filename: 'lien_search_2026-01-02.pdf',
+    });
+    expect(first.status).toBe(200);
+
+    // Back to a state that admits a file, without sending one.
+    const rejected = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'reject',
+      expectedRevision: 2,
+    });
+    expect(rejected.status).toBe(200);
+
+    const second = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotId,
+      event: 'replace',
+      expectedRevision: 3,
+      filename: 'lien_search_2026-01-02.pdf',
+    });
+
+    expect(second.status).toBe(422);
+    expect(second.payload['code']).toBe('effect_input_invalid');
+    expect(String(second.payload['reason'])).toContain('already recorded');
+    expect((await readUploads(slotId)).length).toBe(1);
+    expect(await readSlot(slotId)).toEqual({ state: 'rejected', revision: 3 });
+  }, 30_000);
 });
 
 // `credit_release` is the last machine without a table. `document_slot` had one

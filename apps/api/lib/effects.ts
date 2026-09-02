@@ -31,7 +31,9 @@
  */
 
 import {
+  appendWorkflowEvent,
   insertDocumentSlots,
+  insertDocumentUpload,
   insertEligibilitySnapshot,
   listDocumentSlots,
   type DatabaseClient,
@@ -41,6 +43,10 @@ import type { ProductEligibility, RequiredDocSlot } from '@lj/rules';
 import type { EffectSpec } from '@lj/workflow';
 
 import { documentSlotRows } from './document-pack.ts';
+import { advanceDocumentSlot, type DocumentSlotSubject } from './document-slot-subject.ts';
+import type { PreparedUpload } from './document-upload.ts';
+import { stubExtractor, type Extractor } from './extraction.ts';
+import type { SubjectSnapshot } from './http.ts';
 
 export type EffectKind = EffectSpec['kind'];
 
@@ -69,13 +75,42 @@ export interface EffectContext {
    * handed, or it fails loudly.
    */
   readonly requiredDocs: readonly RequiredDocSlot[];
+  /**
+   * The slot being moved, and the file `extract_document` is to read. Both are
+   * null for an application transition, and both are prepared before the state
+   * change for the same reason the pack is: an upload with no file behind it
+   * has to refuse rather than leave a slot claiming a document nobody sent.
+   */
+  readonly slot: DocumentSlotSubject | null;
+  readonly upload: PreparedUpload | null;
 }
 
 export type EffectOutcome =
-  | { readonly ok: true }
+  | {
+      readonly ok: true;
+      /**
+       * Where the subject ended up, when an effect moved it further than the
+       * transition did. `extract_document` does: a slot that has just been
+       * uploaded to is extracted from immediately, so the state the caller must
+       * be told about is the one after the effect, not the one before it.
+       */
+      readonly subject: SubjectSnapshot | null;
+    }
   | { readonly ok: false; readonly kind: EffectKind; readonly reason: string };
 
-type EffectRunner = (client: DatabaseClient, context: EffectContext) => Promise<void>;
+type EffectRunner = (
+  client: DatabaseClient,
+  context: EffectContext,
+) => Promise<SubjectSnapshot | null>;
+
+/**
+ * The extractor this API ships with.
+ *
+ * One line, and it is the seam: a real OCR service arrives by replacing this
+ * binding, and nothing else in the file changes. See lib/extraction.ts for why
+ * the stub is stated rather than hidden.
+ */
+const extractor: Extractor = stubExtractor;
 
 /**
  * The evaluation as jsonb.
@@ -93,7 +128,7 @@ function asJson(eligibility: readonly ProductEligibility[]): Json {
 async function writeEligibilitySnapshot(
   client: DatabaseClient,
   context: EffectContext,
-): Promise<void> {
+): Promise<SubjectSnapshot | null> {
   const written = await insertEligibilitySnapshot(client, {
     applicationId: context.applicationId,
     revision: context.revision,
@@ -105,6 +140,7 @@ async function writeEligibilitySnapshot(
     // that might not exist is not a snapshot.
     throw new Error('the insert returned no row');
   }
+  return null;
 }
 
 /**
@@ -121,7 +157,7 @@ async function writeEligibilitySnapshot(
 async function createDocumentSlots(
   client: DatabaseClient,
   context: EffectContext,
-): Promise<void> {
+): Promise<SubjectSnapshot | null> {
   if (context.requiredDocs.length === 0) {
     throw new Error('no document pack was prepared for this transition');
   }
@@ -131,18 +167,105 @@ async function createDocumentSlots(
     documentSlotRows(context.applicationId, context.requiredDocs),
   );
   if (inserted.length > 0) {
-    return;
+    return null;
   }
 
   const existing = await listDocumentSlots(client, context.applicationId);
   if (existing.length === 0) {
     throw new Error('the pack was neither inserted nor already present');
   }
+  return null;
+}
+
+/**
+ * Read the uploaded document, record what it says, and move the slot on.
+ *
+ * Three writes, in the only order that leaves a repairable failure at every
+ * step. The upload row goes first because it is the record of what was
+ * submitted and it is append-only -- there is no UPDATE grant on
+ * `document_upload` for anyone, service role included, so `extracted` has to be
+ * written AT INSERT or never. Then the slot moves `uploaded -> extracted`,
+ * matched on the revision the transition just produced. Then the audit entry.
+ *
+ * The move is fired here rather than left to the client because `extract` is
+ * the platform's own event: the machine names its actor `admin` because
+ * `workflow_transition.actor_role` is not null and there is no `system` role,
+ * and the log records `actor_id` and `actor_role` as null because no person was
+ * behind it. A borrower cannot fire it and should not have to.
+ *
+ * A PARTIAL READ STILL ADVANCES THE SLOT. The fields that were not read surface
+ * as completeness failures with a next action attached; refusing to advance
+ * would leave the document in `uploaded` with nothing able to move it.
+ */
+async function extractDocument(
+  client: DatabaseClient,
+  context: EffectContext,
+): Promise<SubjectSnapshot | null> {
+  const { slot, upload } = context;
+  if (slot === null || upload === null) {
+    throw new Error('no uploaded file was prepared for this transition');
+  }
+
+  const extraction = await extractor.extract(
+    {
+      filename: upload.filename,
+      storagePath: upload.storagePath,
+      mime: upload.mime,
+      bytes: upload.bytes,
+    },
+    { code: slot.code, label: slot.label, extractRequired: slot.extractRequired },
+  );
+
+  const recorded = await insertDocumentUpload(client, {
+    slot_id: slot.id,
+    storage_path: upload.storagePath,
+    filename: upload.filename,
+    bytes: upload.bytes,
+    mime: upload.mime,
+    extracted: extraction.fields as unknown as Json,
+    extraction_state: extraction.state,
+  });
+  if (recorded === null) {
+    throw new Error('the upload record returned no row');
+  }
+
+  const advanced = await advanceDocumentSlot(client, {
+    slotId: slot.id,
+    expectedRevision: context.revision,
+    to: 'extracted',
+    // Only when the document said so. Writing null otherwise would make an
+    // expired certificate current again on its next extraction.
+    ...(extraction.validUntil === null ? {} : { validUntil: extraction.validUntil }),
+  });
+  if (advanced === null) {
+    throw new Error('the slot moved before its extraction could be recorded');
+  }
+
+  const appended = await appendWorkflowEvent(client, {
+    machine: 'document_slot',
+    subject_id: slot.id,
+    from_state: 'uploaded',
+    to_state: advanced.state,
+    event: 'extract',
+    actor_id: null,
+    actor_role: null,
+    payload: {
+      revision: advanced.revision,
+      extractor: 'stub',
+      extraction_state: extraction.state,
+    },
+  });
+  if (appended === null) {
+    throw new Error('the extraction landed but its audit entry did not');
+  }
+
+  return advanced;
 }
 
 const RUNNERS: Partial<Record<EffectKind, EffectRunner>> = {
   write_eligibility_snapshot: writeEligibilitySnapshot,
   create_document_slots: createDocumentSlots,
+  extract_document: extractDocument,
 };
 
 /** The kinds this API has an implementation for. Derived, never restated. */
@@ -182,6 +305,8 @@ export async function runEffects(
   effects: readonly EffectSpec[],
   context: EffectContext,
 ): Promise<EffectOutcome> {
+  let subject: SubjectSnapshot | null = null;
+
   for (const effect of effects) {
     const runner = RUNNERS[effect.kind];
     if (runner === undefined) {
@@ -191,12 +316,12 @@ export async function runEffects(
       return { ok: false, kind: effect.kind, reason: 'this API has no runner for it' };
     }
     try {
-      await runner(client, context);
+      subject = (await runner(client, context)) ?? subject;
     } catch (error: unknown) {
       const described = error instanceof Error ? error.name + ': ' + error.message : 'unknown';
       console.error("effect '" + effect.kind + "' failed: " + described);
       return { ok: false, kind: effect.kind, reason: 'the write did not land' };
     }
   }
-  return { ok: true };
+  return { ok: true, subject };
 }

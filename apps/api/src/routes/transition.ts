@@ -78,9 +78,11 @@ import { resolveRequiredDocs } from '../../lib/document-pack.ts';
 import {
   advanceDocumentSlot,
   asDocumentSlotEvent,
+  documentSlotEffects,
   loadDocumentSlot,
   NO_DOCUMENT_SLOT_CRITERIA,
 } from '../../lib/document-slot-subject.ts';
+import { prepareUpload, type PreparedUpload } from '../../lib/document-upload.ts';
 import { declaresEffect, runEffects, unrunnableEffects } from '../../lib/effects.ts';
 import { readApiEnvironment } from '../../lib/environment.ts';
 import { failure, success, type SubjectSnapshot } from '../../lib/http.ts';
@@ -150,6 +152,7 @@ async function adjudicate(request: Request): Promise<Response> {
     subjectId,
     event,
     expectedRevision,
+    filename: parsed.request.filename,
   };
   if (machine === 'document_slot') {
     return await adjudicateDocumentSlot(service, adjudication);
@@ -165,6 +168,8 @@ interface AdjudicationRequest {
   readonly subjectId: string;
   readonly event: string;
   readonly expectedRevision: number;
+  /** The label on the file an upload is about. Read by no other transition. */
+  readonly filename: string | null;
 }
 
 async function adjudicateApplication(
@@ -443,6 +448,8 @@ async function commit(
     revision: advanced.revision,
     eligibility: request.eligibility,
     requiredDocs: request.requiredDocs,
+    slot: null,
+    upload: null,
   });
   if (!effects.ok) {
     return failure(
@@ -545,7 +552,14 @@ async function adjudicateDocumentSlot(
     });
   }
 
-  const unrunnable = unrunnableEffects(outcome.effects);
+  // What this transition does besides moving the state. Declared effects win;
+  // `documentSlotEffects` is the temporary home for the extraction until
+  // machines/document-slot.ts declares it -- see the note on `extract_document`
+  // in packages/workflow/src/types.ts.
+  const effects =
+    outcome.effects.length > 0 ? outcome.effects : documentSlotEffects(narrowed);
+
+  const unrunnable = unrunnableEffects(effects);
   if (unrunnable.length > 0) {
     return failure(
       501,
@@ -558,6 +572,22 @@ async function adjudicateDocumentSlot(
         'than performed without it',
       { blockers: [], current },
     );
+  }
+
+  // The file this transition is about, found in the bucket rather than named by
+  // the caller, and found BEFORE the state change. A slot that said `uploaded`
+  // with no file behind it is a checklist row nobody can act on: the borrower
+  // believes they sent something and the lender has nothing to open.
+  let upload: PreparedUpload | null = null;
+  if (declaresEffect(effects, 'extract_document')) {
+    const prepared = await prepareUpload(service, slot, request.filename);
+    if (!prepared.ok) {
+      return failure(422, 'effect_input_invalid', prepared.reason, {
+        blockers: [],
+        current,
+      });
+    }
+    upload = prepared.upload;
   }
 
   const advanced = await advanceDocumentSlot(service, {
@@ -586,7 +616,10 @@ async function adjudicateDocumentSlot(
     event: narrowed,
     actorId: actor.id,
     actorRole: actor.role,
-    payload: { revision: advanced.revision, effects: [] },
+    payload: {
+      revision: advanced.revision,
+      effects: effects.map((effect) => effect.kind),
+    },
   });
   if (!appended) {
     return failure(
@@ -600,16 +633,45 @@ async function adjudicateDocumentSlot(
     );
   }
 
+  // The effects, after the state change and for the same reasons as on an
+  // application. `extract_document` moves the slot a second time, so what the
+  // caller is told about is where the slot ended up rather than where this
+  // transition left it -- a browser told `uploaded` would render a document as
+  // waiting for a read that has already happened.
+  const ran = await runEffects(service, effects, {
+    applicationId: slot.applicationId,
+    revision: advanced.revision,
+    eligibility: [],
+    requiredDocs: [],
+    slot,
+    upload,
+  });
+  if (!ran.ok) {
+    return failure(
+      500,
+      'effect_write_failed',
+      'the document moved to ' +
+        advanced.state +
+        " but the declared effect '" +
+        ran.kind +
+        "' did not: " +
+        ran.reason +
+        '; the state change stands',
+      { blockers: [], current: advanced },
+    );
+  }
+  const settled = ran.subject ?? advanced;
+
   return success({
     machine: 'document_slot' satisfies WorkflowMachine,
     subjectId: slot.id,
     applicationId: slot.applicationId,
     event: narrowed,
     from: slot.state,
-    to: advanced.state,
-    revision: advanced.revision,
+    to: settled.state,
+    revision: settled.revision,
     actorRole: actor.role,
-    effects: [],
+    effects: effects.map((effect) => effect.kind),
     events: await listWorkflowEvents(service, 'document_slot', slot.id),
   });
 }

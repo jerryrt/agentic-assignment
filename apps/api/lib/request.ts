@@ -40,11 +40,60 @@ import { eventNamesOf, machineShapeFor } from './machines.ts';
  */
 const RevisionSchema = ApplicationSchema.shape.revision;
 
+/**
+ * A filename is a LABEL, and it is the only thing a caller contributes to an
+ * upload.
+ *
+ * It never locates anything: the object key is minted by the server from the
+ * slot it loaded (see lib/storage.ts), so a filename cannot choose a folder, an
+ * extension or an existing object. What it does do is get stored and shown back
+ * to two people, and -- for the stub extractor -- read for what it says about
+ * the document.
+ *
+ * So it is validated as a leaf name and nothing more. A separator would make it
+ * look like a path in a UI that displays it; a control character or a NUL would
+ * make it something else again in a log; and 200 characters is more than any
+ * real name and less than a body worth storing.
+ */
+const MAX_FILENAME_LENGTH = 200;
+
+export function parseUploadFilename(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const filename = value.trim();
+  if (filename === '' || filename.length > MAX_FILENAME_LENGTH) {
+    return null;
+  }
+  if (filename === '.' || filename === '..') {
+    return null;
+  }
+  // eslint-disable-next-line no-control-regex -- rejecting them is the point
+  if (/[/\\\u0000-\u001f\u007f]/.test(filename)) {
+    return null;
+  }
+  return filename;
+}
+
 export interface TransitionRequest {
   readonly machine: WorkflowMachine;
   readonly subjectId: string;
   readonly event: string;
   readonly expectedRevision: number;
+  /**
+   * The name of the file a document upload is about, or null.
+   *
+   * The one field a caller contributes to an upload, and it is a LABEL: the
+   * object key is minted by the server and rediscovered by the server, so a
+   * filename cannot choose a folder or name an existing object. It is stored,
+   * shown back to both parties, and read by the extractor -- which is why it is
+   * carried at all rather than left to the object's own generated name.
+   *
+   * Optional, and an absent one is not an error: the upload is then recorded
+   * under the object's own name and the extraction reads nothing from it, which
+   * is a partial read and a state the borrower can act on.
+   */
+  readonly filename: string | null;
 }
 
 export type TransitionRequestParse =
@@ -116,6 +165,20 @@ export function parseTransitionRequest(body: unknown): TransitionRequestParse {
     );
   }
 
+  // Absent is allowed; present and malformed is not. A filename that arrives as
+  // a path or with control characters in it is not a mistake worth guessing at.
+  const rawFilename = body['filename'];
+  const filename = rawFilename === undefined || rawFilename === null
+    ? null
+    : parseUploadFilename(rawFilename);
+  if (rawFilename !== undefined && rawFilename !== null && filename === null) {
+    problems.push(
+      'filename must be a leaf name: no separators, no control characters, at most ' +
+        String(MAX_FILENAME_LENGTH) +
+        ' characters',
+    );
+  }
+
   if (
     problems.length > 0 ||
     machine === null ||
@@ -135,6 +198,7 @@ export function parseTransitionRequest(body: unknown): TransitionRequestParse {
       subjectId: subjectParse.data,
       event: eventParse.data,
       expectedRevision: revisionParse.data,
+      filename,
     },
   };
 }
@@ -142,41 +206,6 @@ export function parseTransitionRequest(body: unknown): TransitionRequestParse {
 /* -------------------------------------------------------------------------
  * The document routes
  * ---------------------------------------------------------------------- */
-
-/**
- * A filename is a LABEL, and it is the only thing a caller contributes to an
- * upload.
- *
- * It never locates anything: the object key is minted by the server from the
- * slot it loaded (see lib/storage.ts), so a filename cannot choose a folder, an
- * extension or an existing object. What it does do is get stored and shown back
- * to two people, and -- for the stub extractor -- read for what it says about
- * the document.
- *
- * So it is validated as a leaf name and nothing more. A separator would make it
- * look like a path in a UI that displays it; a control character or a NUL would
- * make it something else again in a log; and 200 characters is more than any
- * real name and less than a body worth storing.
- */
-const MAX_FILENAME_LENGTH = 200;
-
-export function parseUploadFilename(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const filename = value.trim();
-  if (filename === '' || filename.length > MAX_FILENAME_LENGTH) {
-    return null;
-  }
-  if (filename === '.' || filename === '..') {
-    return null;
-  }
-  // eslint-disable-next-line no-control-regex -- rejecting them is the point
-  if (/[/\\\u0000-\u001f\u007f]/.test(filename)) {
-    return null;
-  }
-  return filename;
-}
 
 export interface UploadUrlRequest {
   readonly slotId: string;

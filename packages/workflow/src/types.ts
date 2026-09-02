@@ -34,7 +34,21 @@ export type EffectSpec =
   | { readonly kind: 'create_loan' }
   | { readonly kind: 'post_ledger_entry' }
   | { readonly kind: 'write_eligibility_snapshot' }
-  | { readonly kind: 'create_document_slots' };
+  | { readonly kind: 'create_document_slots' }
+  /**
+   * Reading an uploaded document and recording what it says.
+   *
+   * Named here, and NOT YET DECLARED on `upload` and `replace` in
+   * machines/document-slot.ts: that file belongs to another issue's scope, and
+   * the API attaches this effect to those two events in the meantime (see
+   * apps/api/lib/document-slot-subject.ts). The kind lives here rather than in
+   * apps/api because an effect kind is the vocabulary a machine declares in,
+   * and putting it anywhere else would mean a second vocabulary when the
+   * declaration lands. Adding `effects: [{ kind: 'extract_document' }]` to
+   * those two transitions is the whole of that change; the runner does not
+   * move.
+   */
+  | { readonly kind: 'extract_document' };
 
 /**
  * A transition as written in a machine definition. `from` accepts a single state
