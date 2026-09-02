@@ -50,6 +50,12 @@ export const TRANSITION_FAILURE_CODES = [
   'guard_refused',
   /** The transition declares an effect this API cannot yet carry out. */
   'effect_not_implemented',
+  /**
+   * The effect has a runner, but the data it would write cannot be assembled --
+   * a product whose document pack does not parse, an upload with no file behind
+   * it. Refused before the state change, like an effect with no runner at all.
+   */
+  'effect_input_invalid',
   /** The subject moved under the caller: the two-tabs case. */
   'revision_conflict',
   /** The database trigger rejected a move the machine believes is legal. */

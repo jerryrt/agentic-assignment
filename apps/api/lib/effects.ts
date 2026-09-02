@@ -16,8 +16,13 @@
  *
  * `create_loan` and `post_ledger_entry` are still in that position: both belong
  * to Option 3, which is Phase 7 in plan/09-build-order.md and owns the `loan`
- * table and the ledger they would write. `write_eligibility_snapshot` is not --
- * it has a table as of `0005_application_submit.sql`, and the runner below.
+ * table and the ledger they would write. `write_eligibility_snapshot` and
+ * `create_document_slots` are not -- both have a table, as of
+ * `0005_application_submit.sql` and `0006_documents.sql`, and both have a
+ * runner below.
+ *
+ * An effect whose INPUT cannot be prepared refuses in the same direction and at
+ * the same moment, before the update. See `EffectContext.requiredDocs`.
  *
  * Which kinds are runnable is derived from the runner map rather than listed
  * beside it. Two lists would be two answers the first time one was edited
@@ -25,9 +30,17 @@
  * transition writes what it promised.
  */
 
-import { insertEligibilitySnapshot, type DatabaseClient, type Json } from '@lj/db';
-import type { ProductEligibility } from '@lj/rules';
+import {
+  insertDocumentSlots,
+  insertEligibilitySnapshot,
+  listDocumentSlots,
+  type DatabaseClient,
+  type Json,
+} from '@lj/db';
+import type { ProductEligibility, RequiredDocSlot } from '@lj/rules';
 import type { EffectSpec } from '@lj/workflow';
+
+import { documentSlotRows } from './document-pack.ts';
 
 export type EffectKind = EffectSpec['kind'];
 
@@ -45,6 +58,17 @@ export interface EffectContext {
   readonly revision: number;
   /** Every product this application was evaluated against, as evaluated. */
   readonly eligibility: readonly ProductEligibility[];
+  /**
+   * The pack `create_document_slots` is to generate, resolved from the product
+   * BEFORE the state change (see `resolveRequiredDocs`).
+   *
+   * Prepared by the caller rather than read here for the same reason the
+   * evaluation is: a pack that cannot be read has to refuse the transition,
+   * and by the time a runner is called the application has already moved. The
+   * runner therefore has nothing left to decide -- it writes what it was
+   * handed, or it fails loudly.
+   */
+  readonly requiredDocs: readonly RequiredDocSlot[];
 }
 
 export type EffectOutcome =
@@ -83,14 +107,56 @@ async function writeEligibilitySnapshot(
   }
 }
 
+/**
+ * Generate the checklist the product asks for.
+ *
+ * Idempotent by the unique constraint on (application_id, code) rather than by
+ * checking first: a check-then-insert is a race, and the failure it produces is
+ * a doubled checklist nobody can explain. `insertDocumentSlots` therefore
+ * returns the rows THIS call inserted, which is empty on a retry -- so an empty
+ * result is not evidence of anything, and the pack is read back to tell a retry
+ * apart from a write that did not land. Moving an application to `docs_pending`
+ * with no checklist is the one outcome this effect exists to prevent.
+ */
+async function createDocumentSlots(
+  client: DatabaseClient,
+  context: EffectContext,
+): Promise<void> {
+  if (context.requiredDocs.length === 0) {
+    throw new Error('no document pack was prepared for this transition');
+  }
+
+  const inserted = await insertDocumentSlots(
+    client,
+    documentSlotRows(context.applicationId, context.requiredDocs),
+  );
+  if (inserted.length > 0) {
+    return;
+  }
+
+  const existing = await listDocumentSlots(client, context.applicationId);
+  if (existing.length === 0) {
+    throw new Error('the pack was neither inserted nor already present');
+  }
+}
+
 const RUNNERS: Partial<Record<EffectKind, EffectRunner>> = {
   write_eligibility_snapshot: writeEligibilitySnapshot,
+  create_document_slots: createDocumentSlots,
 };
 
 /** The kinds this API has an implementation for. Derived, never restated. */
 export const RUNNABLE_EFFECT_KINDS: ReadonlySet<EffectKind> = new Set(
   Object.keys(RUNNERS) as EffectKind[],
 );
+
+/** Whether a transition declares one particular effect. */
+export function declaresEffect(
+  effects: readonly EffectSpec[],
+  kind: EffectKind,
+): boolean {
+  return effects.some((effect) => effect.kind === kind);
+}
 
 /** The declared kinds this API has no implementation for, in declared order. */
 export function unrunnableEffects(effects: readonly EffectSpec[]): readonly EffectKind[] {

@@ -33,7 +33,8 @@ export type GuardResult = { readonly ok: true } | GuardRefusal;
 export type EffectSpec =
   | { readonly kind: 'create_loan' }
   | { readonly kind: 'post_ledger_entry' }
-  | { readonly kind: 'write_eligibility_snapshot' };
+  | { readonly kind: 'write_eligibility_snapshot' }
+  | { readonly kind: 'create_document_slots' };
 
 /**
  * A transition as written in a machine definition. `from` accepts a single state

@@ -21,6 +21,7 @@ import {
   ApplicationBorrowerViewSchema,
   moneyFromNumericString,
   parseApplicationData,
+  type ApplicationData,
   type ApplicationState,
   type JsonValue,
   type Money,
@@ -186,6 +187,14 @@ export interface ApplicationEvaluation {
   readonly context: ApplicationGuardContext;
   /** Every active product this application was evaluated against, as evaluated. */
   readonly eligibility: readonly ProductEligibility[];
+  /**
+   * The payload, parsed once.
+   *
+   * Carried rather than re-parsed by whoever needs it next: an effect resolves
+   * the product from `request.product_id`, and two parses of one row are two
+   * chances to disagree about what it says.
+   */
+  readonly data: ApplicationData;
 }
 
 /**
@@ -261,6 +270,7 @@ export async function evaluateApplication(
         documentPack: [],
       },
       eligibility: evaluated,
+      data: parsed.data,
     },
   };
 }

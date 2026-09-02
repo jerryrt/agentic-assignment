@@ -32,6 +32,7 @@ import { createServiceRoleClient, type ServiceRoleClient } from '@lj/db/service-
 import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { runEffects } from '../lib/effects.ts';
 import { POST } from '../src/routes/transition.ts';
 
 const TRANSITION_URL = 'https://lj-api.example/api/transition';
@@ -195,6 +196,40 @@ async function insertApplication(values: {
 }
 
 /**
+ * The pack this product asks for, and the four ways a slot can stand.
+ *
+ * Modelled on the Equipment Term Loan in 0004_demo_data.sql. The four codes are
+ * chosen so one pack can express every failure the completeness rules
+ * distinguish -- missing, stale, unreadable -- alongside a slot that is simply
+ * finished, because the borrower's next action differs in each case and a test
+ * that only proved "not complete" would not prove the difference.
+ */
+const PROBE_PACK: Json = {
+  version: 1,
+  slots: [
+    {
+      code: 'land_title',
+      label: 'Land title or lease',
+      required: true,
+      extract_required: ['total_acres', 'owner_name'],
+    },
+    {
+      code: 'crop_insurance',
+      label: 'Crop insurance certificate',
+      required: true,
+      extract_required: ['valid_until'],
+    },
+    {
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      required: true,
+      extract_required: ['net_farm_income'],
+    },
+    { code: 'id_verification', label: 'Photo identification', required: true },
+  ],
+};
+
+/**
  * A product the complete payload below actually qualifies for.
  *
  * Modelled on the Equipment Term Loan in 0004_demo_data.sql rather than
@@ -239,6 +274,35 @@ async function insertLoanProduct(orgId: string): Promise<string> {
           },
         ],
       },
+      required_docs: PROBE_PACK,
+      active: true,
+    })
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture loan_product failed: ${error?.message ?? 'no row'}`);
+  }
+  return data.id;
+}
+
+/**
+ * A product whose document pack cannot be read.
+ *
+ * An empty `slots` array is refused by parseRequiredDocs rather than read as
+ * "this product asks for nothing", because a product whose pack is complete
+ * before anybody uploads anything is a policy nobody has stated. Named to sort
+ * after PRODUCT_NAME so that the eligibility evaluation, which orders by name,
+ * still reports the probe product first.
+ */
+async function insertUnreadablePackProduct(orgId: string): Promise<string> {
+  const { data, error } = await service
+    .from('loan_product')
+    .insert({
+      org_id: orgId,
+      name: UNREADABLE_PACK_PRODUCT_NAME,
+      min_amount: 10_000.0,
+      max_amount: 250_000.0,
+      criteria: { version: 1, rules: [] },
       required_docs: { version: 1, slots: [] },
       active: true,
     })
@@ -248,6 +312,22 @@ async function insertLoanProduct(orgId: string): Promise<string> {
     throw new Error(`fixture loan_product failed: ${error?.message ?? 'no row'}`);
   }
   return data.id;
+}
+
+/** The pack one application actually holds, in the order it is rendered. */
+async function readSlots(applicationId: string): Promise<
+  { code: string; label: string; required: boolean; state: string; extract_required: string[] }[]
+> {
+  const { data, error } = await service
+    .from('document_slot')
+    .select('code, label, required, state, extract_required')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: true })
+    .order('code', { ascending: true });
+  if (error !== null || data === null) {
+    throw new Error(`could not read slots of ${applicationId}: ${error?.message ?? 'no rows'}`);
+  }
+  return data;
 }
 
 async function readApplication(
@@ -312,14 +392,21 @@ let appStale: string;
 let appCorrupt: string;
 let appCorruptToWithdraw: string;
 
+/** submitted, org alpha. The pack generation case; this one is mutated. */
+let appForPack: string;
+/** submitted, org alpha, naming a product whose document pack does not parse. */
+let appUnreadablePack: string;
+
 let productAlpha: string;
+let productUnreadablePack: string;
 
 const SUBMITTED_REVISION = 3;
 
 const PRODUCT_NAME = 'Api Probe Equipment Term Loan';
+const UNREADABLE_PACK_PRODUCT_NAME = 'Zz Api Probe Unreadable Pack';
 
 /**
- * A payload with every required field answered, on every step.
+ * A payload with every required field answered, on every step, for one product.
  *
  * Copied from the shape packages/domain declares rather than invented, and
  * chosen so the figures clear the product above: coverage is 1.597 against a
@@ -327,7 +414,8 @@ const PRODUCT_NAME = 'Api Probe Equipment Term Loan';
  * the footprint. The point of the case is a submit that succeeds, so every
  * criterion has to pass for a reason that is legible here.
  */
-const COMPLETE_PAYLOAD: Json = {
+function completePayload(productId: string): Json {
+  return {
   borrower: {
     entity_type: 'sole_trader',
     legal_name: 'Beau Marchand',
@@ -354,13 +442,18 @@ const COMPLETE_PAYLOAD: Json = {
     current_liabilities_minor: 9_500_000,
   },
   request: {
-    product_id: '00000000-0000-4000-8000-0000000000b2',
+    // The product is a fixture id rather than a constant, because
+    // `request_docs` now reads the pack off the product this names. A payload
+    // pointing at a product that does not exist would refuse the transition
+    // for a reason that has nothing to do with what each case is about.
+    product_id: productId,
     amount_requested_minor: 9_500_000,
     term_months: 60,
     purpose: 'Replace a 1998 combine ahead of harvest',
     collateral_value_minor: 12_500_000,
   },
-};
+  };
+}
 
 /**
  * A payload the schema rejects outright.
@@ -406,7 +499,10 @@ beforeAll(async () => {
     promoteToLender(foreignLender, orgBeta),
   ]);
 
-  productAlpha = await insertLoanProduct(orgAlpha);
+  [productAlpha, productUnreadablePack] = await Promise.all([
+    insertLoanProduct(orgAlpha),
+    insertUnreadablePackProduct(orgAlpha),
+  ]);
 
   [
     appForSuccess,
@@ -419,24 +515,33 @@ beforeAll(async () => {
     appStale,
     appCorrupt,
     appCorruptToWithdraw,
+    appUnreadablePack,
+    appForPack,
   ] = await Promise.all([
+      // Every application that reaches `submitted` carries the payload that
+      // took it there: `request_docs` reads the pack off the product the
+      // payload names, so a submitted row with an empty payload is one no
+      // borrower could have produced.
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'submitted',
         revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'submitted',
         revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'submitted',
         revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
@@ -461,14 +566,14 @@ beforeAll(async () => {
         orgId: orgAlpha,
         state: 'draft',
         revision: 0,
-        data: COMPLETE_PAYLOAD,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'draft',
         revision: 2,
-        data: COMPLETE_PAYLOAD,
+        data: completePayload(productAlpha),
       }),
       insertApplication({
         borrowerId: borrower.id,
@@ -485,6 +590,20 @@ beforeAll(async () => {
         state: 'draft',
         revision: 0,
         data: CORRUPT_PAYLOAD,
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'submitted',
+        revision: SUBMITTED_REVISION,
+        data: completePayload(productUnreadablePack),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'submitted',
+        revision: SUBMITTED_REVISION,
+        data: completePayload(productAlpha),
       }),
     ]);
 }, 60_000);
@@ -517,8 +636,12 @@ afterAll(async () => {
       appStale,
       appCorrupt,
       appCorruptToWithdraw,
+      appUnreadablePack,
+      appForPack,
     ]);
-  await service.from('loan_product').delete().eq('id', productAlpha);
+  // document_slot and document_upload rows go with their application, by the
+  // cascades in 0006_documents.sql.
+  await service.from('loan_product').delete().in('id', [productAlpha, productUnreadablePack]);
   await service
     .from('profile')
     .update({ org_id: null })
@@ -870,6 +993,111 @@ describe('a legal transition', () => {
     expect(String(answer.payload['reason'])).toContain('not been evaluated');
     expect(await eventCount(appForSuccess)).toBe(before);
     expect((await readApplication(appForSuccess)).state).toBe('docs_pending');
+  });
+});
+
+// Asking for documents is what brings the checklist into being, so the pack is
+// asserted against the product rather than against a fixed list: the whole
+// point of generating it is that an equipment loan and an operating line ask
+// for different things.
+describe('requesting documents generates the pack', () => {
+  it('creates exactly the slots the product asks for', async () => {
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appForPack,
+      event: 'request_docs',
+      expectedRevision: SUBMITTED_REVISION,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      to: 'docs_pending',
+      effects: ['create_document_slots'],
+    });
+
+    const slots = await readSlots(appForPack);
+    expect(slots.map((slot) => slot.code).sort()).toEqual([
+      'crop_insurance',
+      'id_verification',
+      'land_title',
+      'tax_return_2024',
+    ]);
+    // Every slot starts where the machine starts, and carries the terms it was
+    // created under: `extract_required` is copied onto the row rather than read
+    // back through the product, so editing the product later cannot change what
+    // an already generated slot is judged against.
+    expect(slots.every((slot) => slot.state === 'required')).toBe(true);
+    expect(slots.every((slot) => slot.required)).toBe(true);
+    expect(slots.find((slot) => slot.code === 'land_title')?.extract_required).toEqual([
+      'total_acres',
+      'owner_name',
+    ]);
+    expect(slots.find((slot) => slot.code === 'id_verification')?.extract_required).toEqual([]);
+    expect(slots.find((slot) => slot.code === 'crop_insurance')?.label).toBe(
+      'Crop insurance certificate',
+    );
+  });
+
+  /**
+   * Generating twice must not double the checklist.
+   *
+   * Asserted on the runner rather than through the endpoint because the machine
+   * has no second `request_docs` to fire -- the application has moved on -- and
+   * the race this guards against is two runs of the effect, not two legal
+   * transitions. The unique constraint on (application_id, code) is what makes
+   * it safe; a check-then-insert would be the race.
+   */
+  it('adds nothing when the effect runs a second time', async () => {
+    const before = await readSlots(appForPack);
+    expect(before.length).toBe(4);
+
+    const outcome = await runEffects(service, [{ kind: 'create_document_slots' }], {
+      applicationId: appForPack,
+      revision: SUBMITTED_REVISION + 1,
+      eligibility: [],
+      requiredDocs: [
+        {
+          code: 'land_title',
+          label: 'Land title or lease',
+          required: true,
+          extractRequired: ['total_acres', 'owner_name'],
+        },
+      ],
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect((await readSlots(appForPack)).length).toBe(4);
+  });
+
+  /**
+   * A pack that does not parse refuses the transition whole.
+   *
+   * The alternative -- generating the slots that did parse -- is worse than
+   * refusing, because a checklist one document short reports COMPLETE once its
+   * slots are accepted, and nobody notices until a file reaches a lender
+   * without its land title. parseRequiredDocs fails closed for that reason and
+   * this is what failing closed has to look like from outside.
+   */
+  it('refuses when the product pack cannot be read, and generates nothing', async () => {
+    const before = await eventCount(appUnreadablePack);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appUnreadablePack,
+      event: 'request_docs',
+      expectedRevision: SUBMITTED_REVISION,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(String(answer.payload['reason'])).toContain(UNREADABLE_PACK_PRODUCT_NAME);
+
+    expect(await readSlots(appUnreadablePack)).toEqual([]);
+    expect(await eventCount(appUnreadablePack)).toBe(before);
+    expect(await readApplication(appUnreadablePack)).toEqual({
+      state: 'submitted',
+      revision: SUBMITTED_REVISION,
+    });
   });
 });
 

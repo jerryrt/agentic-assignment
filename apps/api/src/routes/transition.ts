@@ -47,7 +47,7 @@
 import { appendWorkflowEvent, listWorkflowEvents, type DatabaseClient } from '@lj/db';
 import { createServiceRoleClient } from '@lj/db/service-role';
 import type { ApplicationState, WorkflowMachine } from '@lj/domain';
-import type { ProductEligibility } from '@lj/rules';
+import type { ProductEligibility, RequiredDocSlot } from '@lj/rules';
 import {
   applicationMachine,
   apply,
@@ -67,7 +67,8 @@ import {
   type ApplicationEvaluation,
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
-import { runEffects, unrunnableEffects } from '../../lib/effects.ts';
+import { resolveRequiredDocs } from '../../lib/document-pack.ts';
+import { declaresEffect, runEffects, unrunnableEffects } from '../../lib/effects.ts';
 import { readApiEnvironment } from '../../lib/environment.ts';
 import { failure, success, type SubjectSnapshot } from '../../lib/http.ts';
 import { anyPermits, transitionsFrom } from '../../lib/machines.ts';
@@ -230,6 +231,35 @@ async function adjudicate(request: Request): Promise<Response> {
     );
   }
 
+  // 6b -- an effect whose INPUT cannot be assembled refuses in the same
+  // direction, and at the same moment, as one with no runner at all. The
+  // checklist a product asks for is read HERE rather than inside the runner
+  // because by the time a runner is called the application has already moved:
+  // a pack that does not parse would then be a `docs_pending` application with
+  // a partial checklist, which reports complete once its slots are accepted.
+  let requiredDocs: readonly RequiredDocSlot[] = [];
+  if (declaresEffect(outcome.effects, 'create_document_slots')) {
+    if (evaluation === null) {
+      // Unreachable: a declared effect makes the transition need an evaluation,
+      // and the branch above already answered the contradiction. Stated because
+      // the alternative is reading a product id out of a payload nobody parsed.
+      return failure(500, 'internal_error', "'" + event + "' was adjudicated without an evaluation", {
+        blockers: [],
+        current,
+      });
+    }
+    const resolved = await resolveRequiredDocs(service, subject, evaluation.data);
+    if (!resolved.ok) {
+      return failure(
+        422,
+        'effect_input_invalid',
+        "'" + event + "' generates the document checklist, and " + resolved.reason,
+        { blockers: [], current },
+      );
+    }
+    requiredDocs = resolved.slots;
+  }
+
   return await commit(service, {
     actor,
     subject,
@@ -238,6 +268,7 @@ async function adjudicate(request: Request): Promise<Response> {
     to: outcome.to,
     effects: outcome.effects,
     eligibility: evaluation?.eligibility ?? [],
+    requiredDocs,
   });
 }
 
@@ -253,6 +284,8 @@ interface CommitRequest {
    * effect records what the guard read rather than re-reading it.
    */
   readonly eligibility: readonly ProductEligibility[];
+  /** The pack `create_document_slots` is to generate, resolved before the write. */
+  readonly requiredDocs: readonly RequiredDocSlot[];
 }
 
 /**
@@ -351,6 +384,7 @@ async function commit(
     applicationId: subject.id,
     revision: advanced.revision,
     eligibility: request.eligibility,
+    requiredDocs: request.requiredDocs,
   });
   if (!effects.ok) {
     return failure(

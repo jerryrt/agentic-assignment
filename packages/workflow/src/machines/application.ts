@@ -60,7 +60,24 @@ export const applicationMachine = defineMachine<
         ]),
       effects: [{ kind: 'write_eligibility_snapshot' }],
     },
-    { from: 'submitted', event: 'request_docs', to: 'docs_pending', actor: ['lender'] },
+    /**
+     * Asking for documents is what brings the checklist into being.
+     *
+     * The slots are generated from the requested product's `required_docs`
+     * (plan/04-option1-documents.md), so the set is product-dependent: an
+     * equipment loan asks for an invoice and a lien search, an operating line
+     * does not. Declaring that here rather than writing it inline in the
+     * handler is what makes an application at `docs_pending` with no checklist
+     * impossible: an effect nothing can carry out refuses the transition, so
+     * there is no path to that state which skips the generation.
+     */
+    {
+      from: 'submitted',
+      event: 'request_docs',
+      to: 'docs_pending',
+      actor: ['lender'],
+      effects: [{ kind: 'create_document_slots' }],
+    },
     {
       from: 'docs_pending',
       event: 'begin_review',
