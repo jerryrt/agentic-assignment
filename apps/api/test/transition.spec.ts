@@ -314,6 +314,59 @@ async function insertUnreadablePackProduct(orgId: string): Promise<string> {
   return data.id;
 }
 
+/**
+ * A slot written straight into the state a case needs.
+ *
+ * Inserted at its final state rather than walked there, which is the pattern
+ * 0004_demo_data.sql uses and for the same reason: the BEFORE UPDATE trigger
+ * reads `workflow_transition`, so walking a fixture through the machine makes
+ * every case depend on the machine it is meant to be testing. An INSERT is not
+ * a transition and the trigger does not fire on one.
+ */
+async function insertSlot(values: {
+  applicationId: string;
+  code: string;
+  label: string;
+  state: string;
+  required?: boolean;
+  extractRequired?: string[];
+  validUntil?: string | null;
+}): Promise<string> {
+  const { data, error } = await service
+    .from('document_slot')
+    .insert({
+      application_id: values.applicationId,
+      code: values.code,
+      label: values.label,
+      state: values.state,
+      required: values.required ?? true,
+      extract_required: values.extractRequired ?? [],
+      valid_until: values.validUntil ?? null,
+    })
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture document_slot failed: ${error?.message ?? 'no row'}`);
+  }
+  return data.id;
+}
+
+async function readSlot(slotId: string): Promise<{ state: string; revision: number }> {
+  const { data, error } = await service
+    .from('document_slot')
+    .select('state, revision')
+    .eq('id', slotId)
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`could not read slot ${slotId}: ${error?.message ?? 'no row'}`);
+  }
+  return { state: data.state, revision: data.revision };
+}
+
+async function slotEventCount(slotId: string): Promise<number> {
+  return (await listWorkflowEvents(service, 'document_slot', slotId)).length;
+}
+
 /** The pack one application actually holds, in the order it is rendered. */
 async function readSlots(applicationId: string): Promise<
   { code: string; label: string; required: boolean; state: string; extract_required: string[] }[]
@@ -394,6 +447,11 @@ let appCorruptToWithdraw: string;
 
 /** submitted, org alpha. The pack generation case; this one is mutated. */
 let appForPack: string;
+/** docs_pending, org alpha. Slots written straight into `extracted`. */
+let appForDecision: string;
+let slotToAccept: string;
+let slotToReject: string;
+let slotUntouched: string;
 /** submitted, org alpha, naming a product whose document pack does not parse. */
 let appUnreadablePack: string;
 
@@ -401,6 +459,7 @@ let productAlpha: string;
 let productUnreadablePack: string;
 
 const SUBMITTED_REVISION = 3;
+const DOCS_PENDING_REVISION = 4;
 
 const PRODUCT_NAME = 'Api Probe Equipment Term Loan';
 const UNREADABLE_PACK_PRODUCT_NAME = 'Zz Api Probe Unreadable Pack';
@@ -517,6 +576,7 @@ beforeAll(async () => {
     appCorruptToWithdraw,
     appUnreadablePack,
     appForPack,
+    appForDecision,
   ] = await Promise.all([
       // Every application that reaches `submitted` carries the payload that
       // took it there: `request_docs` reads the pack off the product the
@@ -605,7 +665,35 @@ beforeAll(async () => {
         revision: SUBMITTED_REVISION,
         data: completePayload(productAlpha),
       }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'docs_pending',
+        revision: DOCS_PENDING_REVISION,
+        data: completePayload(productAlpha),
+      }),
     ]);
+
+  [slotToAccept, slotToReject, slotUntouched] = await Promise.all([
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'land_title',
+      label: 'Land title or lease',
+      state: 'extracted',
+    }),
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'tax_return_2024',
+      label: '2024 tax return',
+      state: 'extracted',
+    }),
+    insertSlot({
+      applicationId: appForDecision,
+      code: 'id_verification',
+      label: 'Photo identification',
+      state: 'required',
+    }),
+  ]);
 }, 60_000);
 
 afterAll(async () => {
@@ -638,6 +726,7 @@ afterAll(async () => {
       appCorruptToWithdraw,
       appUnreadablePack,
       appForPack,
+      appForDecision,
     ]);
   // document_slot and document_upload rows go with their application, by the
   // cascades in 0006_documents.sql.
@@ -1291,6 +1380,144 @@ describe('a declared effect nothing can carry out', () => {
   });
 });
 
+// A document slot is the second machine with a table, and the first one whose
+// authority splits within a single subject: the borrower supplies the file and
+// the lender decides about it. Every case here asserts on the database
+// afterwards, because a 403 that moved the row would still be a 403.
+describe('moving a document slot', () => {
+  it('lets the lender accept a document the borrower supplied', async () => {
+    const before = await slotEventCount(slotToAccept);
+
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotToAccept,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({
+      ok: true,
+      machine: 'document_slot',
+      subjectId: slotToAccept,
+      applicationId: appForDecision,
+      event: 'accept',
+      from: 'extracted',
+      to: 'accepted',
+      revision: 1,
+      actorRole: 'lender',
+    });
+
+    expect(await readSlot(slotToAccept)).toEqual({ state: 'accepted', revision: 1 });
+    expect(await slotEventCount(slotToAccept)).toBe(before + 1);
+  });
+
+  /**
+   * The decision is the lender's, and the endpoint is where that is enforced.
+   * A borrower who could accept their own documents would clear the
+   * `begin_review` guard without a lender ever reading one, and the database
+   * would not notice: the trigger checks the state pair and knows nothing about
+   * who asked.
+   */
+  it('refuses a borrower who tries to accept their own document', async () => {
+    const before = await slotEventCount(slotToReject);
+
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotToReject,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+    expect(blockersOf(answer)).toEqual([]);
+    expect(await readSlot(slotToReject)).toEqual({ state: 'extracted', revision: 0 });
+    expect(await slotEventCount(slotToReject)).toBe(before);
+  });
+
+  it('lets the lender reject one, and records the move', async () => {
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotToReject,
+      event: 'reject',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({ from: 'extracted', to: 'rejected', revision: 1 });
+    expect(await readSlot(slotToReject)).toEqual({ state: 'rejected', revision: 1 });
+
+    const events = await listWorkflowEvents(service, 'document_slot', slotToReject);
+    expect(events.at(-1)).toMatchObject({
+      machine: 'document_slot',
+      subject_id: slotToReject,
+      from_state: 'extracted',
+      to_state: 'rejected',
+      event: 'reject',
+      actor_id: lender.id,
+      actor_role: 'lender',
+    });
+  });
+
+  // The slot's audience is its application's audience, resolved through the
+  // application rather than restated. Another borrower is not in it.
+  it('hides a slot on an application the caller cannot read', async () => {
+    const answer = await post(otherBorrower.token, {
+      machine: 'document_slot',
+      subjectId: slotUntouched,
+      event: 'upload',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+    expect(await readSlot(slotUntouched)).toEqual({ state: 'required', revision: 0 });
+  });
+
+  it('hides a slot at another organisation from a lender', async () => {
+    const answer = await post(foreignLender.token, {
+      machine: 'document_slot',
+      subjectId: slotUntouched,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  it('refuses an event that does not leave the slot\'s state', async () => {
+    const answer = await post(lender.token, {
+      machine: 'document_slot',
+      subjectId: slotUntouched,
+      event: 'accept',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect(currentOf(answer)).toMatchObject({ state: 'required', revision: 0 });
+  });
+
+  it('answers 409 when the slot moved under the caller', async () => {
+    // slotToAccept is at revision 1 by now, having been accepted above.
+    const answer = await post(borrower.token, {
+      machine: 'document_slot',
+      subjectId: slotToAccept,
+      event: 'replace',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('revision_conflict');
+    expect(currentOf(answer)).toMatchObject({ state: 'accepted', revision: 1 });
+    expect(await readSlot(slotToAccept)).toEqual({ state: 'accepted', revision: 1 });
+  });
+});
+
+// `credit_release` is the last machine without a table. `document_slot` had one
+// as of 0006_documents.sql and is adjudicated above.
 describe('a machine with no subject store', () => {
   it('says so rather than pretending the subject is absent', async () => {
     const answer = await post(borrower.token, {

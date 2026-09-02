@@ -44,15 +44,22 @@
  * Exported as `POST` alone, so the runtime rejects every other method for us.
  */
 
-import { appendWorkflowEvent, listWorkflowEvents, type DatabaseClient } from '@lj/db';
+import {
+  appendWorkflowEvent,
+  listWorkflowEvents,
+  type DatabaseClient,
+  type Json,
+} from '@lj/db';
 import { createServiceRoleClient } from '@lj/db/service-role';
-import type { ApplicationState, WorkflowMachine } from '@lj/domain';
+import type { AppRole, ApplicationState, WorkflowMachine } from '@lj/domain';
 import type { ProductEligibility, RequiredDocSlot } from '@lj/rules';
 import {
   applicationMachine,
   apply,
+  documentSlotMachine,
   type ApplicationEvent,
   type EffectSpec,
+  type MachineShape,
 } from '@lj/workflow';
 
 import { authenticateActor, bearerToken, type Actor } from '../../lib/actor.ts';
@@ -68,6 +75,12 @@ import {
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
 import { resolveRequiredDocs } from '../../lib/document-pack.ts';
+import {
+  advanceDocumentSlot,
+  asDocumentSlotEvent,
+  loadDocumentSlot,
+  NO_DOCUMENT_SLOT_CRITERIA,
+} from '../../lib/document-slot-subject.ts';
 import { declaresEffect, runEffects, unrunnableEffects } from '../../lib/effects.ts';
 import { readApiEnvironment } from '../../lib/environment.ts';
 import { failure, success, type SubjectSnapshot } from '../../lib/http.ts';
@@ -98,10 +111,9 @@ async function adjudicate(request: Request): Promise<Response> {
   }
   const { machine, subjectId, event, expectedRevision } = parsed.request;
 
-  // Only `application` has a table. Answered before authentication because it
-  // is a property of this deployment, not of the caller, and answering it as
-  // "no such subject" would send someone hunting for a row that was never
-  // going to be there.
+  // Answered before authentication because it is a property of this
+  // deployment, not of the caller, and answering it as "no such subject" would
+  // send someone hunting for a row that was never going to be there.
   if (!hasSubjectStore(machine)) {
     return failure(
       501,
@@ -126,6 +138,41 @@ async function adjudicate(request: Request): Promise<Response> {
   // made is this code's responsibility.
   const service = createServiceRoleClient(environment.serviceRole);
 
+  // Two subjects, two adjudicators, and no registry over them. They share who
+  // the audience is and how the audit entry is written, and those two are
+  // shared as functions; everything else -- the table, the schema that
+  // validates a row, the guard context, what an effect needs -- differs, and a
+  // generic pipeline with a switch inside every step would read worse than
+  // both of these do (CLAUDE.md section 9).
+  const adjudication: AdjudicationRequest = {
+    actor,
+    machine: parsed.machine,
+    subjectId,
+    event,
+    expectedRevision,
+  };
+  if (machine === 'document_slot') {
+    return await adjudicateDocumentSlot(service, adjudication);
+  }
+  return await adjudicateApplication(service, adjudication);
+}
+
+/** What both adjudicators take, once the request has been made sense of. */
+interface AdjudicationRequest {
+  readonly actor: Actor;
+  /** The definition behind the machine id, resolved by the parse. */
+  readonly machine: MachineShape;
+  readonly subjectId: string;
+  readonly event: string;
+  readonly expectedRevision: number;
+}
+
+async function adjudicateApplication(
+  service: DatabaseClient,
+  request: AdjudicationRequest,
+): Promise<Response> {
+  const { actor, subjectId, event, expectedRevision } = request;
+
   // 3 -- load the subject, and re-make the policies' decision about it.
   const subject = await loadApplication(service, subjectId);
   if (subject === null || !applicationReadableBy(subject, actor)) {
@@ -136,7 +183,7 @@ async function adjudicate(request: Request): Promise<Response> {
   // Structural authority, asked of the machine definition rather than inferred
   // from the engine's refusal message. Both answers below carry no blockers,
   // because there is no criterion to show: the request was never coherent.
-  const candidates = transitionsFrom(parsed.machine, subject.state, event);
+  const candidates = transitionsFrom(request.machine, subject.state, event);
   if (candidates.length === 0) {
     return failure(
       409,
@@ -350,9 +397,20 @@ async function commit(
     );
   }
 
-  // 6b -- the audit entry. `actor_id` and `actor_role` are the authenticated
-  // caller and their profile role, never anything the body offered.
-  const appended = await appendEvent(service, request, advanced);
+  // 6b -- the audit entry.
+  const appended = await appendEvent(service, {
+    machine: 'application',
+    subjectId: subject.id,
+    from: subject.state,
+    to: advanced.state,
+    event: request.event,
+    actorId: actor.id,
+    actorRole: actor.role,
+    payload: {
+      revision: advanced.revision,
+      effects: request.effects.map((effect) => effect.kind),
+    },
+  });
   if (!appended) {
     return failure(
       500,
@@ -415,30 +473,182 @@ async function commit(
 }
 
 /**
+ * A slot moves through the same endpoint, and for the same reason.
+ *
+ * Accepting a document is a lender's decision and uploading one is the
+ * borrower's; both are re-checked here against the machine, because a UI that
+ * hides a button is a courtesy and not a gate. The database will not catch a
+ * mistake in this: `document_slot_assert_legal_transition` reads
+ * `workflow_transition` for the state pair and knows nothing about who asked,
+ * and every write below arrives as the service role.
+ */
+async function adjudicateDocumentSlot(
+  service: DatabaseClient,
+  request: AdjudicationRequest,
+): Promise<Response> {
+  const { actor, subjectId, event, expectedRevision } = request;
+
+  const slot = await loadDocumentSlot(service, subjectId);
+  if (slot === null) {
+    return failure(404, 'subject_not_found', 'no such document slot');
+  }
+
+  // The audience is the application's audience, resolved through it rather than
+  // restated -- the shape 0006_documents.sql gives the read policy. A caller
+  // who cannot read the application is answered as though the slot did not
+  // exist, because distinguishing "forbidden" from "absent" hands out the
+  // existence of other people's loan files.
+  const application = await loadApplication(service, slot.applicationId);
+  if (application === null || !applicationReadableBy(application, actor)) {
+    return failure(404, 'subject_not_found', 'no such document slot');
+  }
+
+  const current: SubjectSnapshot = { state: slot.state, revision: slot.revision };
+
+  const candidates = transitionsFrom(request.machine, slot.state, event);
+  if (candidates.length === 0) {
+    return failure(
+      409,
+      'state_conflict',
+      "'" + event + "' does not leave '" + slot.state + "'",
+      { blockers: [], current },
+    );
+  }
+  if (!anyPermits(candidates, actor.role)) {
+    return failure(
+      403,
+      'role_not_permitted',
+      "role '" + actor.role + "' may not fire '" + event + "' from '" + slot.state + "'",
+      { blockers: [], current },
+    );
+  }
+
+  const narrowed = asDocumentSlotEvent(event);
+  if (narrowed === null) {
+    // Unreachable: the parse rejected any event this machine does not declare.
+    return failure(400, 'invalid_request', "unknown event '" + event + "'");
+  }
+
+  const outcome = apply(
+    documentSlotMachine,
+    slot.state,
+    narrowed,
+    actor.role,
+    NO_DOCUMENT_SLOT_CRITERIA,
+  );
+  if (!outcome.ok) {
+    // Unreachable while no slot transition carries a guard, and answered rather
+    // than asserted: a guard added later must refuse here like any other.
+    return failure(422, 'guard_refused', outcome.reason, {
+      blockers: outcome.blockers,
+      current,
+    });
+  }
+
+  const unrunnable = unrunnableEffects(outcome.effects);
+  if (unrunnable.length > 0) {
+    return failure(
+      501,
+      'effect_not_implemented',
+      "'" +
+        event +
+        "' declares the effect " +
+        unrunnable.join(', ') +
+        ', which this API cannot yet carry out; the transition is refused rather ' +
+        'than performed without it',
+      { blockers: [], current },
+    );
+  }
+
+  const advanced = await advanceDocumentSlot(service, {
+    slotId: slot.id,
+    expectedRevision,
+    to: outcome.to,
+  });
+  if (advanced === null) {
+    const now = await loadDocumentSlot(service, slot.id);
+    return failure(
+      409,
+      'revision_conflict',
+      'the document moved while this request was in flight; nothing was written',
+      {
+        blockers: [],
+        current: now === null ? null : { state: now.state, revision: now.revision },
+      },
+    );
+  }
+
+  const appended = await appendEvent(service, {
+    machine: 'document_slot',
+    subjectId: slot.id,
+    from: slot.state,
+    to: advanced.state,
+    event: narrowed,
+    actorId: actor.id,
+    actorRole: actor.role,
+    payload: { revision: advanced.revision, effects: [] },
+  });
+  if (!appended) {
+    return failure(
+      500,
+      'event_log_write_failed',
+      'the document moved to ' +
+        outcome.to +
+        ' but its audit entry could not be written; the state change stands and the ' +
+        'log is short one row',
+      { blockers: [], current: advanced },
+    );
+  }
+
+  return success({
+    machine: 'document_slot' satisfies WorkflowMachine,
+    subjectId: slot.id,
+    applicationId: slot.applicationId,
+    event: narrowed,
+    from: slot.state,
+    to: advanced.state,
+    revision: advanced.revision,
+    actorRole: actor.role,
+    effects: [],
+    events: await listWorkflowEvents(service, 'document_slot', slot.id),
+  });
+}
+
+/** One audit entry, as both machines write it. */
+interface EventRecord {
+  readonly machine: WorkflowMachine;
+  readonly subjectId: string;
+  readonly from: string;
+  readonly to: string;
+  readonly event: string;
+  /** Null when the platform acted and no person is behind the move. */
+  readonly actorId: string | null;
+  readonly actorRole: AppRole | null;
+  readonly payload: Json;
+}
+
+/**
  * Append the audit entry, retrying once.
  *
  * One retry, not a loop: the failure this covers is a dropped connection on a
  * write that is idempotent in practice because the log has no uniqueness to
  * violate. A persistent failure is a real fault and must surface as one rather
  * than be absorbed by a handler that keeps trying until the request times out.
+ *
+ * One log serves every machine, so one writer does too. `actor_id` and
+ * `actor_role` are the authenticated caller and their profile role, never
+ * anything the body offered.
  */
-async function appendEvent(
-  service: DatabaseClient,
-  request: CommitRequest,
-  advanced: SubjectSnapshot,
-): Promise<boolean> {
+async function appendEvent(service: DatabaseClient, record: EventRecord): Promise<boolean> {
   const row = {
-    machine: 'application',
-    subject_id: request.subject.id,
-    from_state: request.subject.state,
-    to_state: advanced.state,
-    event: request.event,
-    actor_id: request.actor.id,
-    actor_role: request.actor.role,
-    payload: {
-      revision: advanced.revision,
-      effects: request.effects.map((effect) => effect.kind),
-    },
+    machine: record.machine,
+    subject_id: record.subjectId,
+    from_state: record.from,
+    to_state: record.to,
+    event: record.event,
+    actor_id: record.actorId,
+    actor_role: record.actorRole,
+    payload: record.payload,
   };
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -477,12 +687,14 @@ async function readJsonBody(request: Request): Promise<JsonBody | UnreadableBody
 /**
  * Which machines have somewhere to keep a subject.
  *
- * `document_slot` arrives with the document pack in plan/04 and
- * `credit_release` with the servicing option in plan/06. Both are complete
- * machines with generated SQL rows already; what they lack is a table, and the
- * handoff on issue #9 says whoever creates one must also attach
- * `assert_legal_transition` to it.
+ * `document_slot` has a table as of `0006_documents.sql`, which also attaches
+ * `assert_legal_transition` to it -- the requirement the handoff on issue #9
+ * states for anyone creating one. `credit_release` arrives with the servicing
+ * option in plan/06: it is a complete machine with generated SQL rows already,
+ * and what it lacks is the table. Whoever adds one adds the trigger, a loader
+ * that validates the row with the schema that owns it, a predicate that
+ * re-makes the read policy's decision, and a branch in `adjudicate`.
  */
 function hasSubjectStore(machine: WorkflowMachine): boolean {
-  return machine === 'application';
+  return machine === 'application' || machine === 'document_slot';
 }
