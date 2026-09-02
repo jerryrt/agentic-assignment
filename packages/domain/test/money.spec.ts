@@ -18,7 +18,7 @@ import {
   negateMoney,
   subtractMoney,
   sumMoney,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 describe('the minor-unit contract', () => {
   it('fixes the scale at two, matching numeric(14,2) in Postgres', () => {

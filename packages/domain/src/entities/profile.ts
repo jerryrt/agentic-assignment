@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { TimestampSchema, UuidSchema } from '../primitives.js';
-import { AppRoleSchema } from '../roles.js';
+import { TimestampSchema, UuidSchema } from '../primitives.ts';
+import { AppRoleSchema } from '../roles.ts';
 
 /**
  * A row of `profile`, keyed by `auth.users.id`.

@@ -31,13 +31,13 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-import type { DatabaseClient } from './client.js';
+import type { DatabaseClient } from './client.ts';
 import {
   requireVariable,
   SUPABASE_URL_VAR,
   type EnvironmentSource,
-} from './config.js';
-import type { Database } from './database.types.js';
+} from './config.ts';
+import type { Database } from './database.types.ts';
 
 /** See the note in ./config.ts on why names, and only names, are written down. */
 export const SUPABASE_SERVICE_ROLE_KEY_VAR = 'SUPABASE_SERVICE_ROLE_KEY';

@@ -9,13 +9,13 @@ import {
   ruleUnknown,
 } from '@lj/domain';
 
-import { joinWords } from '../engine/figures.js';
-import { numericAtLeast, numericAtMost, numericWithinBand } from '../engine/numeric.js';
-import { oneOf } from '../engine/exact.js';
-import { type Rule, evaluate } from '../engine/rule.js';
-import type { EligibilityContext } from './context.js';
-import type { EligibilityCriteria, EligibilityCriterion } from './criteria.js';
-import { ELIGIBILITY_FIELDS } from './fields.js';
+import { joinWords } from '../engine/figures.ts';
+import { numericAtLeast, numericAtMost, numericWithinBand } from '../engine/numeric.ts';
+import { oneOf } from '../engine/exact.ts';
+import { type Rule, evaluate } from '../engine/rule.ts';
+import type { EligibilityContext } from './context.ts';
+import type { EligibilityCriteria, EligibilityCriterion } from './criteria.ts';
+import { ELIGIBILITY_FIELDS } from './fields.ts';
 
 /**
  * Compiling a product's criteria into rules, and matching an application

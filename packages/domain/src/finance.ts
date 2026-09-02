@@ -1,4 +1,4 @@
-import type { Money } from './money.js';
+import type { Money } from './money.ts';
 
 /**
  * The derived lending figures (CLAUDE.md section 7): DSCR, LTV, current ratio.

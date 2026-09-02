@@ -1,6 +1,6 @@
 import type { AppRole } from '@lj/domain';
 
-import { PASSES } from './guards.js';
+import { PASSES } from './guards.ts';
 import type {
   GuardResult,
   Machine,
@@ -8,7 +8,7 @@ import type {
   MachineShape,
   NormalisedTransition,
   TransitionOutcome,
-} from './types.js';
+} from './types.ts';
 
 /**
  * The engine. Roughly a hundred lines, because a machine is data and the engine

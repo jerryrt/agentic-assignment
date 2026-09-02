@@ -10,17 +10,17 @@
  * rules reject, so this list is the whole contract.
  */
 
-export * from './primitives.js';
-export * from './roles.js';
-export * from './money.js';
-export * from './finance.js';
-export * from './states.js';
-export * from './labels.js';
-export * from './rule-result.js';
+export * from './primitives.ts';
+export * from './roles.ts';
+export * from './money.ts';
+export * from './finance.ts';
+export * from './states.ts';
+export * from './labels.ts';
+export * from './rule-result.ts';
 
-export * from './entities/organisation.js';
-export * from './entities/profile.js';
-export * from './entities/loan-product.js';
-export * from './entities/application.js';
-export * from './entities/workflow-event.js';
-export * from './entities/workflow-transition.js';
+export * from './entities/organisation.ts';
+export * from './entities/profile.ts';
+export * from './entities/loan-product.ts';
+export * from './entities/application.ts';
+export * from './entities/workflow-event.ts';
+export * from './entities/workflow-transition.ts';

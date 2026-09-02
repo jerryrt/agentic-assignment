@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import type { RuleResult } from '@lj/domain';
 import { basisPointsDelta, ruleFailed, rulePassed, ruleUnknown } from '@lj/domain';
 
-import { LjRuleList } from './rule-list.js';
+import { LjRuleList } from './rule-list.ts';
 
 @Component({
   selector: 'lj-rule-list-host',

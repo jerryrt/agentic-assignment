@@ -9,7 +9,7 @@ import {
   loanToValueBasisPoints,
   moneyFromNumericString,
   ratioBasisPoints,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const money = moneyFromNumericString;
 

@@ -10,7 +10,7 @@ import {
   applicationStateLabel,
   audienceForRole,
   creditReleaseStateLabel,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 describe('audiences', () => {
   it('has one vocabulary per side of the file', () => {

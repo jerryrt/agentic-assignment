@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { NonEmptyTextSchema, TimestampSchema, UuidSchema } from '../primitives.js';
+import { NonEmptyTextSchema, TimestampSchema, UuidSchema } from '../primitives.ts';
 
 /**
  * The lending organisation. Products, applications and loans all hang off it,

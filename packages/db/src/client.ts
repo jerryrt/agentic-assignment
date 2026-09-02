@@ -11,8 +11,8 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { AnonClientConfig } from './config.js';
-import type { Database } from './database.types.js';
+import type { AnonClientConfig } from './config.ts';
+import type { Database } from './database.types.ts';
 
 /**
  * A Supabase client typed against the generated schema.

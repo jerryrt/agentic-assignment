@@ -1,8 +1,8 @@
 import { type RuleSeverity, ruleFailed, rulePassed, ruleUnknown } from '@lj/domain';
 
-import { joinWords } from './figures.js';
-import { type Reading, missingFields, missingLabels } from './reading.js';
-import type { Rule } from './rule.js';
+import { joinWords } from './figures.ts';
+import { type Reading, missingFields, missingLabels } from './reading.ts';
+import type { Rule } from './rule.ts';
 
 /**
  * A criterion that is neither a quantity nor a category: a fact that either

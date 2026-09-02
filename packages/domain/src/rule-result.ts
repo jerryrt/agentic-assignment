@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import type { BasisPoints } from './finance.js';
-import type { Money } from './money.js';
+import type { BasisPoints } from './finance.ts';
+import type { Money } from './money.ts';
 
 /**
  * The one vocabulary for "here is where you stand, and why".

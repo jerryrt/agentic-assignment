@@ -14,7 +14,7 @@ import {
   rulePassed,
   ruleUnknown,
   unresolvedRuleResults,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const money = moneyFromNumericString;
 

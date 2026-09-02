@@ -8,15 +8,15 @@ import {
   ruleUnknown,
 } from '@lj/domain';
 
-import { type RuleFigureKind, figureDelta, formatFigure, joinWords } from './figures.js';
+import { type RuleFigureKind, figureDelta, formatFigure, joinWords } from './figures.ts';
 import {
   type AgreementSource,
   combineInputs,
   combineMissing,
   missingFields,
   missingLabels,
-} from './reading.js';
-import type { Rule } from './rule.js';
+} from './reading.ts';
+import type { Rule } from './rule.ts';
 
 /**
  * Cross-checking one figure against the same figure elsewhere.

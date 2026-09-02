@@ -23,11 +23,11 @@ import { fileURLToPath } from 'node:url';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { Database } from '../src/database.types.js';
+import type { Database } from '../src/database.types.ts';
 import {
   getApplicationDecision,
   recordApplicationDecision,
-} from '../src/queries/application-decisions.js';
+} from '../src/queries/application-decisions.ts';
 
 type Client = SupabaseClient<Database>;
 

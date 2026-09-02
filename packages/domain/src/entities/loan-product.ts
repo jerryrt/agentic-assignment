@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { MoneyFromNumericSchema } from '../money.js';
-import { JsonValueSchema, NonEmptyTextSchema, UuidSchema } from '../primitives.js';
+import { MoneyFromNumericSchema } from '../money.ts';
+import { JsonValueSchema, NonEmptyTextSchema, UuidSchema } from '../primitives.ts';
 
 /**
  * A product a lender offers, with its criteria as data.

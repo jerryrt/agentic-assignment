@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { rulePassed } from '@lj/domain';
 
-import { can, apply, defineMachine, reachableStates, terminalStates } from '../src/index.js';
-import type { GuardResult } from '../src/index.js';
+import { can, apply, defineMachine, reachableStates, terminalStates } from '../src/index.ts';
+import type { GuardResult } from '../src/index.ts';
 
 /**
  * The engine is exercised through a throwaway machine rather than through the

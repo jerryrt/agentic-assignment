@@ -3,13 +3,13 @@ import { TestBed } from '@angular/core/testing';
 import type { LabelAudience } from '@lj/domain';
 import { APPLICATION_STATES, CREDIT_RELEASE_STATES } from '@lj/domain';
 
-import type { StateBadgeSubject } from './state-badge.js';
+import type { StateBadgeSubject } from './state-badge.ts';
 import {
   APPLICATION_STATE_TONES,
   CREDIT_RELEASE_STATE_TONES,
   LjStateBadge,
   stateBadgeTone,
-} from './state-badge.js';
+} from './state-badge.ts';
 
 @Component({
   selector: 'lj-state-badge-host',

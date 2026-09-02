@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
-import { NonEmptyTextSchema } from '../primitives.js';
-import { AppRoleSchema } from '../roles.js';
-import { WorkflowMachineSchema } from '../states.js';
+import { NonEmptyTextSchema } from '../primitives.ts';
+import { AppRoleSchema } from '../roles.ts';
+import { WorkflowMachineSchema } from '../states.ts';
 
 /**
  * A row of `workflow_transition`: the legal shape of a state change, as the

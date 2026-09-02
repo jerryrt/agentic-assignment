@@ -8,7 +8,7 @@ import {
   parseTransitionsSql,
   renderTransitionsSql,
   transitionRows,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 describe('transitionRows', () => {
   /**

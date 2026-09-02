@@ -1,7 +1,7 @@
 import type { WorkflowTransition } from '@lj/domain';
 
-import { ALL_MACHINES } from '../machines/index.js';
-import type { MachineShape } from '../types.js';
+import { ALL_MACHINES } from '../machines/index.ts';
+import type { MachineShape } from '../types.ts';
 
 /**
  * Machine definitions flattened into `workflow_transition` rows.

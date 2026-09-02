@@ -1,12 +1,12 @@
-import type { MachineShape } from '../types.js';
+import type { MachineShape } from '../types.ts';
 
-import { applicationMachine } from './application.js';
-import { creditReleaseMachine } from './credit-release.js';
-import { documentSlotMachine } from './document-slot.js';
+import { applicationMachine } from './application.ts';
+import { creditReleaseMachine } from './credit-release.ts';
+import { documentSlotMachine } from './document-slot.ts';
 
-export * from './application.js';
-export * from './credit-release.js';
-export * from './document-slot.js';
+export * from './application.ts';
+export * from './credit-release.ts';
+export * from './document-slot.ts';
 
 /**
  * Every machine, seen without its context type.

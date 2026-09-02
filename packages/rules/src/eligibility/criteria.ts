@@ -1,11 +1,11 @@
 import { RULE_SEVERITIES, type RuleSeverity } from '@lj/domain';
 
-import { figureUnitNoun } from '../engine/figures.js';
+import { figureUnitNoun } from '../engine/figures.ts';
 import {
   ELIGIBILITY_FIELDS,
   type EligibilityFieldName,
   isEligibilityFieldName,
-} from './fields.js';
+} from './fields.ts';
 
 /**
  * `loan_product.criteria`, parsed.

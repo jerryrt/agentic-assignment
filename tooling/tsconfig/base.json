@@ -35,6 +35,13 @@
     // whole-program tsc emit. Emit-time cross-file type information therefore
     // does not exist, and verbatimModuleSyntax forces the type-only imports to
     // say so in the source instead of relying on the compiler to elide them.
+    // Relative imports name a ".ts" file because that is the file that
+    // exists: packages are consumed as TypeScript source through
+    // "exports": "./src/index.ts" and nothing is ever emitted. The ".js"
+    // spelling that node16 resolution expects is a lie here -- Node resolves
+    // it literally, finds nothing, and a serverless function fails to load
+    // before it runs a line. Node imports a ".ts" specifier directly.
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
 

@@ -13,7 +13,7 @@ import {
   parseEligibilityCriteria,
   type EligibilityContext,
   type EligibilityProduct,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const money = moneyFromNumericString;
 

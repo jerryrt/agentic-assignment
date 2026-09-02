@@ -11,7 +11,7 @@ import {
   evaluateCreditRelease,
   pendingCredit,
   type CreditReleaseContext,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 const money = moneyFromNumericString;
 

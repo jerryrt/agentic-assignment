@@ -2,8 +2,8 @@ import { ChangeDetectionStrategy, Component, computed, input } from '@angular/co
 import type { RuleResult } from '@lj/domain';
 import { blockingRuleResults, overallRuleStatus, unresolvedRuleResults } from '@lj/domain';
 
-import type { RuleRow } from './rule-presentation.js';
-import { overallRulePresentation, ruleRow } from './rule-presentation.js';
+import type { RuleRow } from './rule-presentation.ts';
+import { overallRulePresentation, ruleRow } from './rule-presentation.ts';
 
 /**
  * "Here is where you stand, and why" -- the one surface for it.

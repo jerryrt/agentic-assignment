@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RuleResultSchema, moneyFromNumericString } from '@lj/domain';
 
-import { numericAgreement, readNumber, type Tolerance } from '../src/index.js';
+import { numericAgreement, readNumber, type Tolerance } from '../src/index.ts';
 
 interface Pair {
   readonly left: number | null;

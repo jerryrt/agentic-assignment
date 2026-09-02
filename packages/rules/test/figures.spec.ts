@@ -8,7 +8,7 @@ import {
   formatFigure,
   joinWords,
   type RuleFigureKind,
-} from '../src/index.js';
+} from '../src/index.ts';
 
 describe('formatFigure', () => {
   const cases: readonly (readonly [RuleFigureKind, number, string])[] = [

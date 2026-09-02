@@ -14,9 +14,9 @@
  * is what proves the two have not drifted.
  */
 
-import type { DatabaseClient } from '../client.js';
-import type { Database } from '../database.types.js';
-import { unwrapList } from '../errors.js';
+import type { DatabaseClient } from '../client.ts';
+import type { Database } from '../database.types.ts';
+import { unwrapList } from '../errors.ts';
 
 export type WorkflowTransition =
   Database['public']['Tables']['workflow_transition']['Row'];
