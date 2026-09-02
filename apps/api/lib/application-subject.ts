@@ -37,6 +37,7 @@ import {
 } from '@lj/rules';
 import {
   APPLICATION_EVENTS,
+  applicationMachine,
   type ApplicationEvent,
   type ApplicationGuardContext,
 } from '@lj/workflow';
@@ -263,6 +264,55 @@ export async function evaluateApplication(
     },
   };
 }
+
+/**
+ * Whether this transition needs the rule sets evaluated at all.
+ *
+ * Read off the machine definition, which is the one statement of what each
+ * transition needs: a guard is the only thing that reads the context, and a
+ * declared effect is the only other thing that reads the evaluation beside it.
+ * Nothing here restates which transitions those are (CLAUDE.md section 9).
+ *
+ * It exists because evaluating unconditionally made a corrupt payload a
+ * LOCKOUT. `withdraw` declares no guard and no effect, so it never reads a rule
+ * set -- but the context was built before the machine was consulted, so an
+ * unparseable `data` refused it along with everything else. After a submit the
+ * borrower can no longer write `data` at all (application_update_own_draft
+ * permits an update only while the state is 'draft'), so a row stranded by a
+ * schema change could be neither repaired nor abandoned by anyone, and needed a
+ * hand-written UPDATE against the database. A borrower's way out of their own
+ * application must not depend on rules that have nothing to say about it.
+ *
+ * Getting this wrong in the direction of `false` is safe: the caller then
+ * passes UNEVALUATED_APPLICATION_CONTEXT, whose empty rule sets requireRules
+ * reads as "not evaluated" and refuses. A mistake here can only ever refuse a
+ * transition, never open one.
+ */
+export function applicationTransitionNeedsEvaluation(
+  from: ApplicationState,
+  event: ApplicationEvent,
+): boolean {
+  return applicationMachine.transitions.some(
+    (transition) =>
+      transition.event === event &&
+      transition.from.includes(from) &&
+      (transition.guard !== null || transition.effects.length > 0),
+  );
+}
+
+/**
+ * What a transition that needs no evaluation is adjudicated against.
+ *
+ * Empty rather than absent, because `apply` takes a context whether or not the
+ * transition has a guard. Every field being empty is what makes it safe to hand
+ * over: requireRules reads an empty rule set as "the caller did not evaluate
+ * this" and refuses, so a guard reached with this in hand fails closed.
+ */
+export const UNEVALUATED_APPLICATION_CONTEXT: ApplicationGuardContext = {
+  completeness: [],
+  eligibility: [],
+  documentPack: [],
+};
 
 export interface AdvanceRequest {
   readonly applicationId: string;

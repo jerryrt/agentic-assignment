@@ -59,9 +59,12 @@ import { authenticateActor, bearerToken, type Actor } from '../../lib/actor.ts';
 import {
   advanceApplication,
   applicationReadableBy,
+  applicationTransitionNeedsEvaluation,
   asApplicationEvent,
   evaluateApplication,
   loadApplication,
+  UNEVALUATED_APPLICATION_CONTEXT,
+  type ApplicationEvaluation,
   type ApplicationSubject,
 } from '../../lib/application-subject.ts';
 import { runEffects, unrunnableEffects } from '../../lib/effects.ts';
@@ -158,22 +161,34 @@ async function adjudicate(request: Request): Promise<Response> {
 
   // 4 -- the decision. Guards run in TypeScript because they need context, and
   // the context is evaluated rule sets that packages/rules produced just now.
-  const evaluated = await evaluateApplication(service, subject);
-  if (!evaluated.ok) {
-    // The stored payload matches no schema, so no rule set could be evaluated
-    // over it. 422 with no blockers: there is no criterion to show, and the
-    // alternative -- an empty context -- would render as four unanswered steps
-    // and tell the applicant their form is unfinished when their row is
-    // corrupt.
-    return failure(422, 'guard_refused', evaluated.reason, { blockers: [], current });
+  //
+  // Only for a transition that reads one. `withdraw` declares no guard and no
+  // effect, so evaluating for it would be work nobody looks at -- and, worse,
+  // a payload that does not parse would refuse it. That was a lockout: after a
+  // submit the borrower cannot write `data` any more, so a row stranded by a
+  // schema change could be neither repaired nor abandoned. A borrower's way
+  // out of their own application must not depend on rules with nothing to say
+  // about it.
+  let evaluation: ApplicationEvaluation | null = null;
+  if (applicationTransitionNeedsEvaluation(subject.state, narrowed)) {
+    const evaluated = await evaluateApplication(service, subject);
+    if (!evaluated.ok) {
+      // The stored payload matches no schema, so no rule set could be evaluated
+      // over it. 422 with no blockers: there is no criterion to show, and the
+      // alternative -- an empty context -- would render as four unanswered
+      // steps and tell the applicant their form is unfinished when their row is
+      // corrupt.
+      return failure(422, 'guard_refused', evaluated.reason, { blockers: [], current });
+    }
+    evaluation = evaluated.evaluation;
   }
-  const evaluation = evaluated.evaluation;
+
   const outcome = apply(
     applicationMachine,
     subject.state,
     narrowed,
     actor.role,
-    evaluation.context,
+    evaluation?.context ?? UNEVALUATED_APPLICATION_CONTEXT,
   );
 
   // 5 -- a guard refused, and said why.
@@ -201,6 +216,20 @@ async function adjudicate(request: Request): Promise<Response> {
     );
   }
 
+  // A declared effect is one of the two things that make a transition need an
+  // evaluation, so reaching here without one is a contradiction between the
+  // check above and the machine definition. Stated rather than assumed,
+  // because the alternative to this branch is a snapshot recording an empty
+  // evaluation as though it were what the borrower was told.
+  if (outcome.effects.length > 0 && evaluation === null) {
+    return failure(
+      500,
+      'internal_error',
+      "'" + event + "' declares an effect but was adjudicated without an evaluation",
+      { blockers: [], current },
+    );
+  }
+
   return await commit(service, {
     actor,
     subject,
@@ -208,7 +237,7 @@ async function adjudicate(request: Request): Promise<Response> {
     expectedRevision,
     to: outcome.to,
     effects: outcome.effects,
-    eligibility: evaluation.eligibility,
+    eligibility: evaluation?.eligibility ?? [],
   });
 }
 

@@ -310,6 +310,7 @@ let appComplete: string;
 let appStale: string;
 /** draft, org alpha, carrying a payload no schema describes. */
 let appCorrupt: string;
+let appCorruptToWithdraw: string;
 
 let productAlpha: string;
 
@@ -417,6 +418,7 @@ beforeAll(async () => {
     appComplete,
     appStale,
     appCorrupt,
+    appCorruptToWithdraw,
   ] = await Promise.all([
       insertApplication({
         borrowerId: borrower.id,
@@ -475,6 +477,15 @@ beforeAll(async () => {
         revision: 0,
         data: CORRUPT_PAYLOAD,
       }),
+      // A second corrupt row, so the case that MOVES one does not depend on
+      // running after the case that only reads one.
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'draft',
+        revision: 0,
+        data: CORRUPT_PAYLOAD,
+      }),
     ]);
 }, 60_000);
 
@@ -505,6 +516,7 @@ afterAll(async () => {
       appComplete,
       appStale,
       appCorrupt,
+      appCorruptToWithdraw,
     ]);
   await service.from('loan_product').delete().eq('id', productAlpha);
   await service
@@ -1001,20 +1013,33 @@ describe('submitting an application', () => {
     expect((await readApplication(appCorrupt)).state).toBe('draft');
   });
 
-  it('refuses every other transition on that application too', async () => {
-    // The consequence of failing closed, stated rather than discovered. The
-    // context is built before the machine is consulted, so a corrupt payload
-    // blocks `withdraw` as well -- loudly, and repairable by the borrower's own
-    // autosave, which is the only thing that writes `data`.
+  // A corrupt payload must not trap the application.
+  //
+  // `withdraw` declares no guard and no effect, so it never reads a rule set
+  // and there is nothing for an unparseable payload to prevent. Refusing it
+  // anyway was a lockout with no way out: after a submit the borrower can no
+  // longer write `data` at all -- application_update_own_draft permits an
+  // update only while the state is 'draft' -- so a row stranded by a schema
+  // change could be neither repaired nor abandoned by anyone, and needed a
+  // hand-written UPDATE against the database.
+  it('still lets the borrower walk away from an application it cannot read', async () => {
     const answer = await post(borrower.token, {
       machine: 'application',
-      subjectId: appCorrupt,
+      subjectId: appCorruptToWithdraw,
       event: 'withdraw',
       expectedRevision: 0,
     });
 
-    expect(answer.status).toBe(422);
-    expect((await readApplication(appCorrupt)).state).toBe('draft');
+    expect(answer.status).toBe(200);
+    expect(answer.payload).toMatchObject({ from: 'draft', to: 'withdrawn' });
+    expect(await readApplication(appCorruptToWithdraw)).toEqual({
+      state: 'withdrawn',
+      revision: 1,
+    });
+    expect(await eventCount(appCorruptToWithdraw)).toBe(1);
+
+    // Nothing was evaluated, so nothing was recorded as having been evaluated.
+    expect(await snapshotsOf(appCorruptToWithdraw)).toEqual([]);
   });
 });
 
