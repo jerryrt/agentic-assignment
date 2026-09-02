@@ -57,6 +57,31 @@ const RevisionSchema = ApplicationSchema.shape.revision;
  */
 const MAX_FILENAME_LENGTH = 200;
 
+/**
+ * How much prose a decline may carry.
+ *
+ * It is read by the borrower and stored forever -- no client can amend it and
+ * no transition rewrites it -- so it has to be long enough to say what to
+ * change and short enough that a response body is not a document. Control
+ * characters are refused for the reason a filename's are: the value is shown
+ * back to two people and written to a log, and a NUL or an escape sequence is
+ * not text. A newline is allowed, because a reason with two paragraphs in it is
+ * a reason and not an attack.
+ */
+const MAX_DECLINE_REASON_LENGTH = 1000;
+
+export function parseDeclineReason(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const reason = value.trim();
+  if (reason === '' || reason.length > MAX_DECLINE_REASON_LENGTH) {
+    return null;
+  }
+  // eslint-disable-next-line no-control-regex -- rejecting them is the point
+  return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(reason) ? null : reason;
+}
+
 export function parseUploadFilename(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -94,6 +119,22 @@ export interface TransitionRequest {
    * is a partial read and a state the borrower can act on.
    */
   readonly filename: string | null;
+  /**
+   * The reason a lender is declining a credit release, or null.
+   *
+   * It travels WITH the transition because there is no other moment at which it
+   * could be written. `credit_release.decline_reason` is lender-authored and
+   * borrower-readable, so it is a column -- but a borrower and a lender are the
+   * same database role, so no client holds an UPDATE privilege on it
+   * (0007_servicing.sql). The service role writes it in the same statement that
+   * moves the state, or it is never written at all.
+   *
+   * Validated here as shape only. Whether a particular transition requires one
+   * is the adjudicator's question, not this parser's: `decline` is the only
+   * event that has anywhere to put it, and this file owns what a field is
+   * rather than which transition needs it.
+   */
+  readonly declineReason: string | null;
 }
 
 export type TransitionRequestParse =
@@ -179,6 +220,22 @@ export function parseTransitionRequest(body: unknown): TransitionRequestParse {
     );
   }
 
+  // Absent is allowed here too. Whether the transition being asked for needs a
+  // reason is the adjudicator's question; what this checks is that a reason
+  // which IS present is prose somebody can be shown.
+  const rawDeclineReason = body['declineReason'];
+  const declineReason =
+    rawDeclineReason === undefined || rawDeclineReason === null
+      ? null
+      : parseDeclineReason(rawDeclineReason);
+  if (rawDeclineReason !== undefined && rawDeclineReason !== null && declineReason === null) {
+    problems.push(
+      'declineReason must be non-empty text with no control characters, at most ' +
+        String(MAX_DECLINE_REASON_LENGTH) +
+        ' characters',
+    );
+  }
+
   if (
     problems.length > 0 ||
     machine === null ||
@@ -199,6 +256,7 @@ export function parseTransitionRequest(body: unknown): TransitionRequestParse {
       event: eventParse.data,
       expectedRevision: revisionParse.data,
       filename,
+      declineReason,
     },
   };
 }

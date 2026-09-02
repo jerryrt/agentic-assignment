@@ -144,6 +144,127 @@ export type Database = {
           },
         ]
       }
+      credit_release: {
+        Row: {
+          amount: number
+          created_at: string
+          decided_by: string | null
+          decline_reason: string | null
+          id: string
+          loan_id: string
+          purpose: string
+          requested_by: string
+          revision: number
+          state: string
+          updated_at: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          decided_by?: string | null
+          decline_reason?: string | null
+          id?: string
+          loan_id: string
+          purpose: string
+          requested_by: string
+          revision?: number
+          state?: string
+          updated_at?: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          decided_by?: string | null
+          decline_reason?: string | null
+          id?: string
+          loan_id?: string
+          purpose?: string
+          requested_by?: string
+          revision?: number
+          state?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_release_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan_balance_v"
+            referencedColumns: ["loan_id"]
+          },
+          {
+            foreignKeyName: "credit_release_requested_by_fkey"
+            columns: ["requested_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      credit_release_note: {
+        Row: {
+          internal_note: string | null
+          recorded_at: string
+          recorded_by: string
+          release_id: string
+        }
+        Insert: {
+          internal_note?: string | null
+          recorded_at?: string
+          recorded_by: string
+          release_id: string
+        }
+        Update: {
+          internal_note?: string | null
+          recorded_at?: string
+          recorded_by?: string
+          release_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_release_note_recorded_by_fkey"
+            columns: ["recorded_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_note_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: true
+            referencedRelation: "credit_release"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_note_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: true
+            referencedRelation: "credit_release_borrower_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_note_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: true
+            referencedRelation: "credit_release_lender_v"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       document_slot: {
         Row: {
           application_id: string
@@ -294,6 +415,157 @@ export type Database = {
             columns: ["application_id"]
             isOneToOne: false
             referencedRelation: "application_lender_v"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ledger_entry: {
+        Row: {
+          amount: number
+          created_at: string
+          effective: string
+          id: number
+          kind: string
+          loan_id: string
+          memo: string | null
+          release_id: string | null
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          effective: string
+          id?: number
+          kind: string
+          loan_id: string
+          memo?: string | null
+          release_id?: string | null
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          effective?: string
+          id?: number
+          kind?: string
+          loan_id?: string
+          memo?: string | null
+          release_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ledger_entry_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ledger_entry_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan_balance_v"
+            referencedColumns: ["loan_id"]
+          },
+          {
+            foreignKeyName: "ledger_entry_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: true
+            referencedRelation: "credit_release"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ledger_entry_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: true
+            referencedRelation: "credit_release_borrower_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ledger_entry_release_id_fkey"
+            columns: ["release_id"]
+            isOneToOne: true
+            referencedRelation: "credit_release_lender_v"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      loan: {
+        Row: {
+          application_id: string
+          approved_limit: number
+          borrower_id: string
+          created_at: string
+          id: string
+          opened_at: string
+          org_id: string
+          product_id: string
+          rate_bps: number
+          status: string
+        }
+        Insert: {
+          application_id: string
+          approved_limit: number
+          borrower_id: string
+          created_at?: string
+          id?: string
+          opened_at?: string
+          org_id: string
+          product_id: string
+          rate_bps: number
+          status?: string
+        }
+        Update: {
+          application_id?: string
+          approved_limit?: number
+          borrower_id?: string
+          created_at?: string
+          id?: string
+          opened_at?: string
+          org_id?: string
+          product_id?: string
+          rate_bps?: number
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "loan_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application_borrower_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "application_lender_v"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_borrower_id_fkey"
+            columns: ["borrower_id"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organisation"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "loan_product"
             referencedColumns: ["id"]
           },
         ]
@@ -563,6 +835,177 @@ export type Database = {
           },
         ]
       }
+      credit_release_borrower_v: {
+        Row: {
+          amount: number | null
+          created_at: string | null
+          decided_by: string | null
+          decline_reason: string | null
+          id: string | null
+          loan_id: string | null
+          purpose: string | null
+          requested_by: string | null
+          revision: number | null
+          state: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          amount?: number | null
+          created_at?: string | null
+          decided_by?: string | null
+          decline_reason?: string | null
+          id?: string | null
+          loan_id?: string | null
+          purpose?: string | null
+          requested_by?: string | null
+          revision?: number | null
+          state?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          amount?: number | null
+          created_at?: string | null
+          decided_by?: string | null
+          decline_reason?: string | null
+          id?: string | null
+          loan_id?: string | null
+          purpose?: string | null
+          requested_by?: string | null
+          revision?: number | null
+          state?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_release_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan_balance_v"
+            referencedColumns: ["loan_id"]
+          },
+          {
+            foreignKeyName: "credit_release_requested_by_fkey"
+            columns: ["requested_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      credit_release_lender_v: {
+        Row: {
+          amount: number | null
+          borrower_id: string | null
+          created_at: string | null
+          decided_by: string | null
+          decided_by_name: string | null
+          decline_reason: string | null
+          id: string | null
+          internal_note: string | null
+          loan_id: string | null
+          note_recorded_at: string | null
+          note_recorded_by: string | null
+          org_id: string | null
+          purpose: string | null
+          requested_by: string | null
+          requested_by_name: string | null
+          revision: number | null
+          state: string | null
+          updated_at: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_release_decided_by_fkey"
+            columns: ["decided_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_loan_id_fkey"
+            columns: ["loan_id"]
+            isOneToOne: false
+            referencedRelation: "loan_balance_v"
+            referencedColumns: ["loan_id"]
+          },
+          {
+            foreignKeyName: "credit_release_note_recorded_by_fkey"
+            columns: ["note_recorded_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_release_requested_by_fkey"
+            columns: ["requested_by"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_borrower_id_fkey"
+            columns: ["borrower_id"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organisation"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      loan_balance_v: {
+        Row: {
+          approved_limit: number | null
+          available: number | null
+          borrower_id: string | null
+          loan_id: string | null
+          org_id: string | null
+          outstanding: number | null
+          pending: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "loan_borrower_id_fkey"
+            columns: ["borrower_id"]
+            isOneToOne: false
+            referencedRelation: "profile"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "loan_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organisation"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       can_read_borrower_profile: {
@@ -579,6 +1022,7 @@ export type Database = {
         Returns: boolean
       }
       is_lender_of_org: { Args: { p_org: string }; Returns: boolean }
+      is_lender_of_release: { Args: { p_release: string }; Returns: boolean }
     }
     Enums: {
       app_role: "borrower" | "lender" | "admin"

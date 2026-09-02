@@ -12,14 +12,13 @@
  */
 
 import {
-  getLoanProduct,
   listDocumentSlots,
   listDocumentUploadsForApplication,
   type DatabaseClient,
   type DocumentSlotInsert,
   type DocumentUploadRow,
 } from '@lj/db';
-import { DocumentSlotStateSchema, UuidSchema, type ApplicationData } from '@lj/domain';
+import { DocumentSlotStateSchema, type ApplicationData } from '@lj/domain';
 import {
   parseRequiredDocs,
   type DocumentContext,
@@ -27,6 +26,8 @@ import {
   type RequiredDocSlot,
   parseExtractedFields,
 } from '@lj/rules';
+
+import { resolveApplicationProduct } from './application-product.ts';
 
 /**
  * The pack a transition is about to generate, or why it cannot be.
@@ -42,56 +43,27 @@ export type RequiredDocsResolution =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * Which product's pack, decided from the application rather than from the
+ * Which pack, decided from the application's product rather than from the
  * request.
  *
- * `request.product_id` is the product the borrower applied for, and it is
- * always answered by the time this runs: `request_docs` leaves `submitted`
- * alone, reaching `submitted` needs the submit guard to pass, and that guard
- * requires every step to be complete -- of which `request.product_id` is one.
- * So an application that names no product here is one that reached `submitted`
- * by some other route, and refusing is the only honest answer.
- *
- * The product is read by id rather than from the active list. An application
- * submitted against a product since withdrawn still has to be workable, and the
- * documents it was asked for are the ones that product asks for.
+ * Which product that is, and every check on it, lives in
+ * `resolveApplicationProduct`: `fund` opens a facility against the same product
+ * and the two answers must not differ. What is left here is the part that is
+ * about documents.
  */
 export async function resolveRequiredDocs(
   client: DatabaseClient,
   application: { readonly id: string; readonly orgId: string },
   data: ApplicationData,
 ): Promise<RequiredDocsResolution> {
-  const productId = data.request.product_id;
-  if (productId === null) {
+  const resolved = await resolveApplicationProduct(client, application, data);
+  if (!resolved.ok) {
     return {
       ok: false,
-      reason:
-        'the application names no product, so there is no document pack to generate; ' +
-        'nothing was written',
+      reason: resolved.reason + ', so there is no document pack to generate',
     };
   }
-  if (!UuidSchema.safeParse(productId).success) {
-    // Refused here rather than sent to the database, where a malformed uuid is
-    // an error about a cast and not about a loan application.
-    return { ok: false, reason: 'the application names a product id that is not a uuid' };
-  }
-
-  const product = await getLoanProduct(client, productId);
-  if (product === null) {
-    return {
-      ok: false,
-      reason: 'the application names a product that no longer exists',
-    };
-  }
-  if (product.org_id !== application.orgId) {
-    // The lender adjudicating is at the application's organisation, and the
-    // pack decides what that lender may then demand. Reading it off another
-    // organisation's product would let a payload choose the checklist.
-    return {
-      ok: false,
-      reason: 'the application names a product belonging to another organisation',
-    };
-  }
+  const product = resolved.product;
 
   const parsed = parseRequiredDocs(product.required_docs);
   if (!parsed.ok) {

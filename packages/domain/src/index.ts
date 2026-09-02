@@ -24,5 +24,6 @@ export * from './entities/loan-product.ts';
 export * from './entities/application.ts';
 export * from './entities/application-data.ts';
 export * from './entities/document.ts';
+export * from './entities/loan.ts';
 export * from './entities/workflow-event.ts';
 export * from './entities/workflow-transition.ts';

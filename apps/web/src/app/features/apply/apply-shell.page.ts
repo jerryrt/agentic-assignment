@@ -5,6 +5,7 @@ import { LjStateBadge } from '@lj/ui';
 
 import { SupabaseAuthService } from '../../core/auth/auth.service.ts';
 import { ApplicationStore } from './application.store.ts';
+import { documentPackPath, hasDocumentPack } from './documents-entry.ts';
 import { LjEligibilityPanel } from './ui/eligibility-panel.ts';
 
 /**
@@ -45,6 +46,23 @@ import { LjEligibilityPanel } from './ui/eligibility-panel.ts';
               [audience]="auth.audience()"
             />
             <span class="apply__saved" data-testid="save-state">{{ savedState() }}</span>
+
+            <!--
+              The way into the document pack, which nothing linked to until
+              issue #54: a borrower at docs_pending landed on the form with no
+              sign that documents were what was now being waited on. Shown only
+              where slots exist -- a link onto an empty checklist teaches the
+              applicant that links here are noise.
+            -->
+            @if (hasPack()) {
+              <a
+                class="lj-button lj-button--quiet apply__documents"
+                [routerLink]="documentsLink()"
+                data-testid="documents-link"
+              >
+                Documents
+              </a>
+            }
           </div>
 
           <nav class="stepper" aria-label="Application steps">
@@ -125,6 +143,10 @@ import { LjEligibilityPanel } from './ui/eligibility-panel.ts';
 
     .apply__title h1 {
       margin: 0;
+    }
+
+    .apply__documents {
+      margin-left: auto;
     }
 
     .apply__saved {
@@ -256,6 +278,18 @@ export class ApplyShellPage {
       () => applicationStepIndex(step) <= applicationStepIndex(this.store.furthestStep()),
     ),
   }));
+
+  /**
+   * Whether to offer the pack at all. The decision is in ./documents-entry.ts
+   * so it can be tested without rendering -- this component uses @lj/ui, which
+   * an apps/web unit test cannot render (issue #33).
+   */
+  protected readonly hasPack = computed(() => {
+    const held = this.store.value();
+    return held !== null && hasDocumentPack(held.state);
+  });
+
+  protected readonly documentsLink = computed(() => documentPackPath(this.id()));
 
   protected readonly savedState = computed(() => {
     if (this.store.isSaving()) {

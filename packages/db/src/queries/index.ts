@@ -11,9 +11,11 @@
 
 export * from './application-decisions.ts';
 export * from './applications.ts';
+export * from './credit-releases.ts';
 export * from './documents.ts';
 export * from './eligibility-snapshots.ts';
 export * from './loan-products.ts';
+export * from './loans.ts';
 export * from './organisations.ts';
 export * from './profiles.ts';
 export * from './workflow-events.ts';

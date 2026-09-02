@@ -14,12 +14,13 @@
  * before it was generated, and the same direction an unevaluated rule set fails
  * in: closed.
  *
- * `create_loan` and `post_ledger_entry` are still in that position: both belong
- * to Option 3, which is Phase 7 in plan/09-build-order.md and owns the `loan`
- * table and the ledger they would write. `write_eligibility_snapshot` and
- * `create_document_slots` are not -- both have a table, as of
- * `0005_application_submit.sql` and `0006_documents.sql`, and both have a
- * runner below.
+ * No declared effect is in that position any more: every kind the three
+ * machines name has a table -- `0005_application_submit.sql`,
+ * `0006_documents.sql` and `0007_servicing.sql` -- and a runner below. The
+ * refusal stays, because it is a property of this file and not a phase of the
+ * build: a kind added to `EffectSpec` without a runner here must refuse the
+ * transition that declares it rather than move a subject and skip what the move
+ * promised.
  *
  * An effect whose INPUT cannot be prepared refuses in the same direction and at
  * the same moment, before the update. See `EffectContext.requiredDocs`.
@@ -35,18 +36,23 @@ import {
   insertDocumentSlots,
   insertDocumentUpload,
   insertEligibilitySnapshot,
+  insertLedgerEntry,
+  insertLoan,
   listDocumentSlots,
   type DatabaseClient,
   type Json,
 } from '@lj/db';
+import { moneyToNumericString } from '@lj/domain';
 import type { ProductEligibility, RequiredDocSlot } from '@lj/rules';
 import type { EffectSpec } from '@lj/workflow';
 
-import { documentSlotRows } from './document-pack.ts';
+import type { CreditReleaseSubject, LoanSubject } from './credit-release-subject.ts';
+import { documentSlotRows, todayInUtc } from './document-pack.ts';
 import { advanceDocumentSlot, type DocumentSlotSubject } from './document-slot-subject.ts';
 import type { PreparedUpload } from './document-upload.ts';
 import { stubExtractor, type Extractor } from './extraction.ts';
 import type { SubjectSnapshot } from './http.ts';
+import { loanInsertRow, type LoanTerms } from './loan-terms.ts';
 
 export type EffectKind = EffectSpec['kind'];
 
@@ -83,6 +89,28 @@ export interface EffectContext {
    */
   readonly slot: DocumentSlotSubject | null;
   readonly upload: PreparedUpload | null;
+  /**
+   * The facility `create_loan` is to open, resolved from the application BEFORE
+   * the state change (see `resolveLoanTerms`).
+   *
+   * Null for every transition that does not fund. Prepared by the caller for
+   * the same reason the document pack is: terms that cannot be assembled have
+   * to refuse the transition, and by the time a runner is called the
+   * application has already moved to `funded` -- which is precisely the state
+   * this effect exists to keep honest.
+   */
+  readonly loanTerms: LoanTerms | null;
+  /**
+   * The request being disbursed and the facility it draws against. Both null
+   * for every transition of the other two machines.
+   *
+   * Unlike the pack and the loan terms, these need no preparation: they are the
+   * subject the adjudicator already loaded and the loan it already resolved to
+   * decide who may act. There is nothing here that could fail to assemble, so
+   * nothing is refused ahead of the state change on their account.
+   */
+  readonly release: CreditReleaseSubject | null;
+  readonly loan: LoanSubject | null;
 }
 
 export type EffectOutcome =
@@ -262,10 +290,110 @@ async function extractDocument(
   return advanced;
 }
 
+/**
+ * Open the facility the application was approved for.
+ *
+ * One insert, and nothing decided here: the terms were resolved and checked
+ * before the state change, so this runner writes what it was handed or fails
+ * loudly. That is the same division `create_document_slots` keeps, and for the
+ * same reason -- by the time it runs, the application says `funded`.
+ *
+ * There is no idempotency check and none is needed. `fund` leaves `approved`
+ * only, so a repeat is refused by the machine with a state conflict before it
+ * reaches an effect, and the revision-matched update is what makes two lender
+ * tabs serialise. A check-then-insert here would add a race in place of a
+ * guarantee that already holds one level up.
+ */
+async function createLoan(
+  client: DatabaseClient,
+  context: EffectContext,
+): Promise<SubjectSnapshot | null> {
+  const terms = context.loanTerms;
+  if (terms === null) {
+    throw new Error('no loan terms were prepared for this transition');
+  }
+
+  const opened = await insertLoan(client, loanInsertRow(terms));
+  if (opened === null) {
+    // PostgREST accepted the statement and returned no row, so nothing can be
+    // said about whether the facility exists. Reported as a failure: a loan
+    // that might be there is the state this effect exists to rule out.
+    throw new Error('the insert returned no row');
+  }
+  return null;
+}
+
+/**
+ * Record the money leaving the facility.
+ *
+ * ONE ENTRY, AND THE DATABASE ENFORCES IT. `ledger_entry.release_id` is UNIQUE,
+ * so a second insert for one release is refused by Postgres rather than by this
+ * function remembering to look first. That is deliberate and it is not merely
+ * tidier: a check-then-insert is a race, and the failure it produces is a
+ * doubled disbursement -- a balance nobody can explain, on a table that has no
+ * UPDATE and no DELETE grant for anyone, service role included. A correction to
+ * a ledger is a compensating entry, so the entry that must not be written twice
+ * is the one it is cheapest to make impossible.
+ *
+ * THE AMOUNT IS POSITIVE because it is signed and a draw raises what is
+ * outstanding. That sign convention is what lets `loan_balance_v` sum the
+ * column rather than branch on `kind`, and it is why `kind` is a label for the
+ * reader rather than an input to the arithmetic (0007_servicing.sql).
+ *
+ * `memo` is left null. The provenance is `release_id`, which is a join to the
+ * borrower's own words about what the money was for; copying that text onto an
+ * append-only row would put a second, uncorrectable copy of it in the one place
+ * nothing can amend.
+ *
+ * WHAT IS NOT ATOMIC. This runs AFTER the state change, because PostgREST gives
+ * each request its own transaction and the revision-matched UPDATE is the only
+ * serialisation point available -- see the note on the transaction boundary in
+ * src/routes/transition.ts. The ordering is the safe one of the two: a stale
+ * revision writes no entry at all, and the failure that remains -- a release at
+ * `funded` whose entry did not land -- is loud, detectable by joining the two
+ * tables, and repairable by posting the entry that is known to be missing. The
+ * other order would post money for a transition that then lost on the revision,
+ * onto a table from which it could never be removed.
+ *
+ * Closing that window properly needs both statements inside one database
+ * transaction, which means a `security definer` function called over PostgREST
+ * RPC. That is a migration and it belongs to the data scope, not here.
+ */
+async function postLedgerEntry(
+  client: DatabaseClient,
+  context: EffectContext,
+): Promise<SubjectSnapshot | null> {
+  const { release, loan } = context;
+  if (release === null || loan === null) {
+    throw new Error('no credit release was prepared for this transition');
+  }
+
+  const posted = await insertLedgerEntry(client, {
+    loan_id: loan.id,
+    kind: 'draw',
+    amount: moneyToNumericString(release.amount),
+    // A calendar day, in UTC and stated rather than defaulted, for the reason
+    // the document rules take today the same way: money moves on a day, and the
+    // server's zone is an accident of where the request was answered.
+    effective: todayInUtc(),
+    release_id: release.id,
+    memo: null,
+  });
+  if (posted === null) {
+    // PostgREST accepted the statement and returned no row, so nothing can be
+    // said about whether the money is on the ledger. Reported as a failure: an
+    // entry that might exist is the one thing a ledger may not have.
+    throw new Error('the insert returned no row');
+  }
+  return null;
+}
+
 const RUNNERS: Partial<Record<EffectKind, EffectRunner>> = {
   write_eligibility_snapshot: writeEligibilitySnapshot,
   create_document_slots: createDocumentSlots,
   extract_document: extractDocument,
+  create_loan: createLoan,
+  post_ledger_entry: postLedgerEntry,
 };
 
 /** The kinds this API has an implementation for. Derived, never restated. */

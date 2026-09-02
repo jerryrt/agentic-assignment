@@ -83,12 +83,47 @@ describe('parseTransitionRequest', () => {
       return;
     }
     expect(Object.keys(parsed.request).sort()).toEqual([
+      'declineReason',
       'event',
       'expectedRevision',
       'filename',
       'machine',
       'subjectId',
     ]);
+  });
+
+  /**
+   * The second thing a caller contributes, and the only field on a credit
+   * release a lender can ever write.
+   *
+   * `credit_release.decline_reason` has no client UPDATE grant -- a borrower
+   * and a lender are the same database role -- so it arrives with the
+   * transition or never. Shape only here: whether `decline` requires one is the
+   * adjudicator's question, and this file owns what a field is.
+   */
+  it('accepts a decline reason as prose, and refuses one that is not', () => {
+    const withReason = parseTransitionRequest({
+      ...wellFormed(),
+      declineReason: '  Ask again after the certificate is renewed.  ',
+    });
+    expect(withReason.ok && withReason.request.declineReason).toBe(
+      'Ask again after the certificate is renewed.',
+    );
+
+    expect(parseTransitionRequest({ ...wellFormed(), declineReason: '' }).ok).toBe(false);
+    expect(parseTransitionRequest({ ...wellFormed(), declineReason: 42 }).ok).toBe(false);
+    expect(
+      parseTransitionRequest({ ...wellFormed(), declineReason: 'a\u0007b' }).ok,
+    ).toBe(false);
+    expect(
+      parseTransitionRequest({ ...wellFormed(), declineReason: 'x'.repeat(1001) }).ok,
+    ).toBe(false);
+    // A reason with two paragraphs in it is a reason, not an attack.
+    expect(
+      parseTransitionRequest({ ...wellFormed(), declineReason: 'One.\nTwo.' }).ok,
+    ).toBe(true);
+    // Absent is not an error at this layer.
+    expect(parseTransitionRequest(wellFormed()).ok).toBe(true);
   });
 
   /**

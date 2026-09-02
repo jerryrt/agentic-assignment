@@ -33,6 +33,7 @@ import { createServiceRoleClient, type ServiceRoleClient } from '@lj/db/service-
 import { RuleResultSchema, type RuleResult } from '@lj/domain';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { loadCreditRelease, loadLoan } from '../lib/credit-release-subject.ts';
 import { runEffects } from '../lib/effects.ts';
 import { POST as CORRECTION } from '../src/routes/documents-correction.ts';
 import { POST as DOWNLOAD_URL } from '../src/routes/documents-download-url.ts';
@@ -659,6 +660,197 @@ async function snapshotsOf(applicationId: string): Promise<readonly EligibilityS
   return await listEligibilitySnapshots(service, applicationId);
 }
 
+/**
+ * A funded application with a facility behind it, and optionally one draw.
+ *
+ * Written straight into its final shape rather than walked there: what is under
+ * test is how a release is adjudicated against a balance, not the funding that
+ * produced it, and a suite that walked every fixture through the machine would
+ * fail for reasons that have nothing to do with the case.
+ *
+ * Money goes IN as text for the same reason it comes out that way -- PostgREST
+ * accepts the exact decimal and Postgres parses it without a float in between.
+ */
+async function insertFundedLoan(values: {
+  borrowerId: string;
+  orgId: string;
+  productId: string;
+  approvedLimit: string;
+  /** One opening draw, or null for a facility nothing has been taken from. */
+  drawn: string | null;
+  status?: string;
+}): Promise<{ applicationId: string; loanId: string }> {
+  const applicationId = await insertApplication({
+    borrowerId: values.borrowerId,
+    orgId: values.orgId,
+    state: 'funded',
+    revision: 5,
+  });
+  const { data, error } = await service
+    .from('loan')
+    .insert({
+      application_id: applicationId,
+      borrower_id: values.borrowerId,
+      org_id: values.orgId,
+      product_id: values.productId,
+      approved_limit: values.approvedLimit,
+      rate_bps: 875,
+      status: values.status ?? 'active',
+    } as never)
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture loan failed: ${error?.message ?? 'no row'}`);
+  }
+  const loanId = data.id;
+
+  if (values.drawn !== null) {
+    const { error: ledgerError } = await service.from('ledger_entry').insert({
+      loan_id: loanId,
+      kind: 'draw',
+      amount: values.drawn,
+      effective: '2026-01-15',
+      memo: 'Api probe opening advance',
+    } as never);
+    if (ledgerError !== null) {
+      throw new Error(`fixture ledger entry failed: ${ledgerError.message}`);
+    }
+  }
+  return { applicationId, loanId };
+}
+
+async function insertRelease(values: {
+  loanId: string;
+  amount: string;
+  state: string;
+  requestedBy: string;
+  purpose?: string;
+}): Promise<string> {
+  const { data, error } = await service
+    .from('credit_release')
+    .insert({
+      loan_id: values.loanId,
+      amount: values.amount,
+      purpose: values.purpose ?? 'Api probe draw',
+      state: values.state,
+      requested_by: values.requestedBy,
+    } as never)
+    .select('id')
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`fixture credit release failed: ${error?.message ?? 'no row'}`);
+  }
+  return data.id;
+}
+
+interface ReleaseFixtureRow {
+  readonly state: string;
+  readonly revision: number;
+  readonly amount: string;
+  readonly decided_by: string | null;
+  readonly decline_reason: string | null;
+}
+
+async function readRelease(releaseId: string): Promise<ReleaseFixtureRow> {
+  const { data, error } = await service
+    .from('credit_release')
+    .select('state, revision, amount::text, decided_by, decline_reason')
+    .eq('id', releaseId)
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`could not read release ${releaseId}: ${error?.message ?? 'no row'}`);
+  }
+  return data as unknown as ReleaseFixtureRow;
+}
+
+interface BalanceFixtureRow {
+  readonly approved_limit: string;
+  readonly outstanding: string;
+  readonly pending: string;
+  readonly available: string;
+}
+
+/**
+ * `loan_balance_v` as the borrower's screen reads it, every figure as text.
+ *
+ * The view is the thing the guard's cap has to agree with, so the assertions
+ * that matter read it here rather than restating the arithmetic -- a test that
+ * recomputed `limit - outstanding - pending` would pass even if the view and
+ * the guard had drifted apart, which is the one bug plan/06 is about.
+ */
+async function readBalance(loanId: string): Promise<BalanceFixtureRow> {
+  const { data, error } = await service
+    .from('loan_balance_v')
+    .select('approved_limit::text, outstanding::text, pending::text, available::text')
+    .eq('loan_id', loanId)
+    .single();
+  if (error !== null || data === null) {
+    throw new Error(`could not read the balance of ${loanId}: ${error?.message ?? 'no row'}`);
+  }
+  return data as unknown as BalanceFixtureRow;
+}
+
+interface LedgerFixtureRow {
+  readonly kind: string;
+  readonly amount: string;
+  readonly effective: string;
+  readonly release_id: string | null;
+}
+
+/** One loan's ledger, amounts as the exact decimal Postgres rendered. */
+async function readLedgerEntries(loanId: string): Promise<readonly LedgerFixtureRow[]> {
+  const { data, error } = await service
+    .from('ledger_entry')
+    .select('kind, amount::text, effective, release_id')
+    .eq('loan_id', loanId);
+  if (error !== null) {
+    throw new Error(`could not read the ledger of ${loanId}: ${error.message}`);
+  }
+  return (data ?? []) as unknown as readonly LedgerFixtureRow[];
+}
+
+async function releaseEventCount(releaseId: string): Promise<number> {
+  return (await listWorkflowEvents(service, 'credit_release', releaseId)).length;
+}
+
+/** One blocker by rule id, so a case can assert on the criterion it is about. */
+function blockerById(answer: Answer, id: string): RuleResult {
+  const found = ruleResults(answer).find((result) => result.id === id);
+  if (found === undefined) {
+    throw new Error(`no blocker with id ${id}; got ${JSON.stringify(blockersOf(answer))}`);
+  }
+  return found;
+}
+
+interface LoanFixtureRow {
+  readonly id: string;
+  readonly borrower_id: string;
+  readonly org_id: string;
+  readonly product_id: string;
+  readonly approved_limit: string;
+  readonly rate_bps: number;
+  readonly status: string;
+}
+
+/**
+ * The facilities one application has opened, money as exact decimal text.
+ *
+ * `approved_limit::text`, for the reason every money select in @lj/db carries
+ * the cast: PostgREST renders `numeric` as a JSON number, so an uncast read
+ * hands the assertion a binary double and the test agrees with the very
+ * rounding it exists to catch.
+ */
+async function readLoans(applicationId: string): Promise<readonly LoanFixtureRow[]> {
+  const { data, error } = await service
+    .from('loan')
+    .select('id, borrower_id, org_id, product_id, approved_limit::text, rate_bps, status')
+    .eq('application_id', applicationId);
+  if (error !== null) {
+    throw new Error(`could not read the loans of ${applicationId}: ${error.message}`);
+  }
+  return (data ?? []) as unknown as readonly LoanFixtureRow[];
+}
+
 let borrower: TestUser;
 let otherBorrower: TestUser;
 let lender: TestUser;
@@ -675,8 +867,12 @@ let appForConflict: string;
 let appForRefusals: string;
 /** draft, org alpha. The guard-refusal case. */
 let appDraft: string;
-/** approved, org alpha. The declared-effect case. */
+/** approved, org alpha, with the payload that took it there. Funded once. */
 let appApproved: string;
+/** approved, org alpha, naming no product. Funding must refuse and write nothing. */
+let appFundNoProduct: string;
+/** approved, org alpha, naming a product but no amount. Same, for the limit. */
+let appFundNoAmount: string;
 /** submitted, org beta, another borrower. The tenant boundary. */
 let appForeign: string;
 /** draft, org alpha, every step answered. The submit that must succeed. */
@@ -714,6 +910,55 @@ let appUnreadablePack: string;
 
 let productAlpha: string;
 let productUnreadablePack: string;
+
+/**
+ * The servicing fixtures.
+ *
+ * One loan per concern rather than one loan with every release on it, and that
+ * is not tidiness: two of the four availability rules read the OTHER releases
+ * of the same loan -- `pending` is netted out of the borrower's available
+ * credit, and `no_other_pending_release` is a policy in its own right -- so a
+ * shared facility would make every case depend on which ran first.
+ *
+ * Every application behind these is `funded`, which is what a loan comes out
+ * of, and each carries the applications' own audience: a release is readable by
+ * whoever may read the application its loan came from, and nothing else.
+ */
+/** limit 250000.00, drawn 100000.00, so available is 150000.00. */
+let appSubmitLoan: string;
+let loanForSubmit: string;
+let releaseWithinAvailable: string;
+/** The same figures, with a request larger than they allow. */
+let appTooLargeLoan: string;
+let loanForTooLarge: string;
+let releaseTooLarge: string;
+/** limit 250000.00, drawn 10000.00. Every lender decision runs here. */
+let appDecideLoan: string;
+let loanForDecisions: string;
+let releaseToApprove: string;
+let releaseToDecline: string;
+let releaseStale: string;
+let releaseForRoleRefusal: string;
+let releaseCancelled: string;
+/** A closed facility: no further credit, but a request already with the lender. */
+let appClosedLoan: string;
+let loanClosed: string;
+let releaseOnClosedLoan: string;
+let releaseToCancel: string;
+/** Org beta, another borrower. The tenant boundary on a release. */
+let appForeignLoan: string;
+let loanForeign: string;
+let releaseForeign: string;
+/** limit 250000.00, drawn 10000.00, one approved release awaiting its money. */
+let appDisburseLoan: string;
+let loanForDisburse: string;
+let releaseToDisburse: string;
+/** A draft on the same facility, submitted after the money moves. */
+let releaseProbeAfterDisburse: string;
+/** Its own facility, so the stale-revision case cannot disturb the balance above. */
+let appStaleDisburseLoan: string;
+let loanForStaleDisburse: string;
+let releaseStaleDisburse: string;
 
 const SUBMITTED_REVISION = 3;
 const DOCS_PENDING_REVISION = 4;
@@ -772,6 +1017,22 @@ function completePayload(productId: string): Json {
 }
 
 /**
+ * The same payload with the requested amount taken out.
+ *
+ * The figure funding opens the facility with, and the one thing the request
+ * step contributes to a loan that no other row carries. A payload without it
+ * parses -- every leaf is nullable, because a draft is partial by definition --
+ * so nothing below the delivery layer refuses it, and the facility would
+ * otherwise be opened for an amount nobody asked for.
+ */
+function payloadWithoutRequestedAmount(productId: string): Json {
+  const payload = completePayload(productId) as Record<string, Json>;
+  const request = { ...(payload['request'] as Record<string, Json>) };
+  delete request['amount_requested_minor'];
+  return { ...payload, request };
+}
+
+/**
  * A payload the schema rejects outright.
  *
  * `borrower` is a string where a section belongs, which no amount of leniency
@@ -826,6 +1087,8 @@ beforeAll(async () => {
     appForRefusals,
     appDraft,
     appApproved,
+    appFundNoProduct,
+    appFundNoAmount,
     appForeign,
     appComplete,
     appStale,
@@ -870,11 +1133,28 @@ beforeAll(async () => {
         state: 'draft',
         revision: 0,
       }),
+      // Funding opens the facility from this payload, so an approved row with
+      // an empty one is a row no borrower could have produced -- reaching
+      // `approved` means the submit guard passed, and that needs every step.
       insertApplication({
         borrowerId: borrower.id,
         orgId: orgAlpha,
         state: 'approved',
         revision: 2,
+        data: completePayload(productAlpha),
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'approved',
+        revision: 0,
+      }),
+      insertApplication({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        state: 'approved',
+        revision: 0,
+        data: payloadWithoutRequestedAmount(productAlpha),
       }),
       insertApplication({
         borrowerId: otherBorrower.id,
@@ -996,6 +1276,172 @@ beforeAll(async () => {
     }),
   ]);
 
+  const [
+    submitLoan,
+    tooLargeLoan,
+    decideLoan,
+    closedLoan,
+    foreignLoan,
+    disburseLoan,
+    staleDisburseLoan,
+  ] = await Promise.all([
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '100000.00',
+      }),
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '100000.00',
+      }),
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '10000.00',
+      }),
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '10000.00',
+        status: 'closed',
+      }),
+      insertFundedLoan({
+        borrowerId: otherBorrower.id,
+        orgId: orgBeta,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: null,
+      }),
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '10000.00',
+      }),
+      insertFundedLoan({
+        borrowerId: borrower.id,
+        orgId: orgAlpha,
+        productId: productAlpha,
+        approvedLimit: '250000.00',
+        drawn: '10000.00',
+      }),
+    ]);
+  ({ applicationId: appSubmitLoan, loanId: loanForSubmit } = submitLoan);
+  ({ applicationId: appTooLargeLoan, loanId: loanForTooLarge } = tooLargeLoan);
+  ({ applicationId: appDecideLoan, loanId: loanForDecisions } = decideLoan);
+  ({ applicationId: appClosedLoan, loanId: loanClosed } = closedLoan);
+  ({ applicationId: appForeignLoan, loanId: loanForeign } = foreignLoan);
+  ({ applicationId: appDisburseLoan, loanId: loanForDisburse } = disburseLoan);
+  ({ applicationId: appStaleDisburseLoan, loanId: loanForStaleDisburse } = staleDisburseLoan);
+
+  [
+    releaseWithinAvailable,
+    releaseTooLarge,
+    releaseToApprove,
+    releaseToDecline,
+    releaseStale,
+    releaseForRoleRefusal,
+    releaseCancelled,
+    releaseOnClosedLoan,
+    releaseToCancel,
+    releaseForeign,
+    releaseToDisburse,
+    releaseProbeAfterDisburse,
+    releaseStaleDisburse,
+  ] = await Promise.all([
+    insertRelease({
+      loanId: loanForSubmit,
+      amount: '50000.00',
+      state: 'draft',
+      requestedBy: borrower.id,
+    }),
+    // 200000.00 against 150000.00 available: a shortfall of exactly 50000.00.
+    insertRelease({
+      loanId: loanForTooLarge,
+      amount: '200000.00',
+      state: 'draft',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForDecisions,
+      amount: '20000.00',
+      state: 'under_review',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForDecisions,
+      amount: '15000.00',
+      state: 'under_review',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForDecisions,
+      amount: '5000.00',
+      state: 'under_review',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForDecisions,
+      amount: '5000.00',
+      state: 'submitted',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForDecisions,
+      amount: '1000.00',
+      state: 'cancelled',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanClosed,
+      amount: '5000.00',
+      state: 'draft',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanClosed,
+      amount: '5000.00',
+      state: 'submitted',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForeign,
+      amount: '5000.00',
+      state: 'draft',
+      requestedBy: otherBorrower.id,
+    }),
+    insertRelease({
+      loanId: loanForDisburse,
+      amount: '25000.00',
+      state: 'approved',
+      requestedBy: borrower.id,
+    }),
+    // A cent more than the facility will have available once the 25000.00
+    // above has been disbursed: 250000.00 - 35000.00 - 0.00 = 215000.00.
+    insertRelease({
+      loanId: loanForDisburse,
+      amount: '215000.01',
+      state: 'draft',
+      requestedBy: borrower.id,
+    }),
+    insertRelease({
+      loanId: loanForStaleDisburse,
+      amount: '5000.00',
+      state: 'approved',
+      requestedBy: borrower.id,
+    }),
+  ]);
+
   [slotForFullRead, slotForPartialRead, slotWithNoFile] = await Promise.all([
     insertSlot({
       applicationId: appForUpload,
@@ -1043,6 +1489,8 @@ afterAll(async () => {
       appForRefusals,
       appDraft,
       appApproved,
+      appFundNoProduct,
+      appFundNoAmount,
       appForeign,
       appComplete,
       appStale,
@@ -1055,6 +1503,18 @@ afterAll(async () => {
       appPackIncomplete,
       appPackComplete,
       appPackEmpty,
+      // loan, credit_release, credit_release_note and ledger_entry all go with
+      // their application, by the cascades in 0007_servicing.sql. That is the
+      // only route out for a ledger entry: UPDATE and DELETE on it are revoked
+      // from service_role too, and a referential action runs as the owner of
+      // the referencing table rather than as the deleting role.
+      appSubmitLoan,
+      appTooLargeLoan,
+      appDecideLoan,
+      appClosedLoan,
+      appForeignLoan,
+      appDisburseLoan,
+      appStaleDisburseLoan,
     ]);
   // document_slot and document_upload rows go with their application, by the
   // cascades in 0006_documents.sql.
@@ -1489,6 +1949,9 @@ describe('requesting documents generates the pack', () => {
       ],
       slot: null,
       upload: null,
+      loanTerms: null,
+      release: null,
+      loan: null,
     });
 
     expect(outcome.ok).toBe(true);
@@ -1697,9 +2160,16 @@ describe('submitting an application', () => {
   });
 });
 
-describe('a declared effect nothing can carry out', () => {
-  it('refuses before writing anything, rather than funding without a loan', async () => {
-    const before = await eventCount(appApproved);
+// Funding is the seam between the two machines: `funded` is terminal for an
+// application, and the `loan` row it writes is what the servicing machine then
+// works on. `create_loan` was declared with no runner for four phases and the
+// transition refused rather than moving -- correctly, because an application at
+// `funded` with no loan behind it says money moved when nothing did. These
+// cases are that refusal turning into the write, and the write is asserted
+// against the database rather than against the response.
+describe('funding an approved application', () => {
+  it('opens one facility carrying the terms the application asked for', async () => {
+    expect(await readLoans(appApproved)).toEqual([]);
 
     const answer = await post(lender.token, {
       machine: 'application',
@@ -1708,12 +2178,83 @@ describe('a declared effect nothing can carry out', () => {
       expectedRevision: 2,
     });
 
-    expect(answer.status).toBe(501);
-    expect(answer.payload['code']).toBe('effect_not_implemented');
-    expect(String(answer.payload['reason'])).toContain('create_loan');
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('funded');
+    expect(answer.payload['effects']).toEqual(['create_loan']);
 
-    expect(await eventCount(appApproved)).toBe(before);
-    expect(await readApplication(appApproved)).toEqual({ state: 'approved', revision: 2 });
+    const loans = await readLoans(appApproved);
+    expect(loans).toHaveLength(1);
+    const loan = loans[0];
+    // Denormalised from the application, never from the request body.
+    expect(loan?.borrower_id).toBe(borrower.id);
+    expect(loan?.org_id).toBe(orgAlpha);
+    expect(loan?.product_id).toBe(productAlpha);
+    // 9_500_000 minor units, which is what the payload's request step asks
+    // for. Asserted as text so a cent lost on the wire would fail here.
+    expect(loan?.approved_limit).toBe('95000.00');
+    expect(loan?.status).toBe('active');
+    // Nothing in the application, the product or the decision records a rate,
+    // so nothing is charged. See lib/loan-terms.ts.
+    expect(loan?.rate_bps).toBe(0);
+  });
+
+  it('refuses a second funding, and opens no second facility', async () => {
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appApproved,
+      event: 'fund',
+      expectedRevision: 3,
+    });
+
+    // Refused by the machine rather than by the runner: nothing leaves
+    // `funded` on `fund`, so a retry cannot reach the effect at all.
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect(await readLoans(appApproved)).toHaveLength(1);
+  });
+
+  it('refuses an application that names no product, and writes nothing', async () => {
+    const before = await eventCount(appFundNoProduct);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appFundNoProduct,
+      event: 'fund',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(String(answer.payload['reason'])).toContain('names no product');
+
+    expect(await readLoans(appFundNoProduct)).toEqual([]);
+    expect(await eventCount(appFundNoProduct)).toBe(before);
+    expect(await readApplication(appFundNoProduct)).toEqual({
+      state: 'approved',
+      revision: 0,
+    });
+  });
+
+  it('refuses an application that asked for no amount, rather than opening a facility at zero', async () => {
+    const before = await eventCount(appFundNoAmount);
+
+    const answer = await post(lender.token, {
+      machine: 'application',
+      subjectId: appFundNoAmount,
+      event: 'fund',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('effect_input_invalid');
+    expect(String(answer.payload['reason'])).toContain('amount');
+
+    expect(await readLoans(appFundNoAmount)).toEqual([]);
+    expect(await eventCount(appFundNoAmount)).toBe(before);
+    expect(await readApplication(appFundNoAmount)).toEqual({
+      state: 'approved',
+      revision: 0,
+    });
   });
 });
 
@@ -2474,18 +3015,375 @@ describe('beginning a review', () => {
 
 });
 
-// `credit_release` is the last machine without a table. `document_slot` had one
-// as of 0006_documents.sql and is adjudicated above.
-describe('a machine with no subject store', () => {
-  it('says so rather than pretending the subject is absent', async () => {
+// A credit release is the third machine with a table and the first whose guard
+// reads money. The cases below are about two things the option turns on: that
+// the cap the guard applies is the same figure `loan_balance_v` shows the
+// borrower, and that a request is adjudicated against the LOAN's audience --
+// which is the application's audience, resolved through it rather than
+// restated.
+describe('adjudicating a credit release', () => {
+  it('lets a borrower submit a request inside their available credit', async () => {
+    const before = await readBalance(loanForSubmit);
+    expect(before.available).toBe('150000.00');
+
     const answer = await post(borrower.token, {
       machine: 'credit_release',
-      subjectId: appForRefusals,
+      subjectId: releaseWithinAvailable,
       event: 'submit',
       expectedRevision: 0,
     });
 
-    expect(answer.status).toBe(501);
-    expect(answer.payload['code']).toBe('machine_not_persisted');
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('submitted');
+    expect(answer.payload['revision']).toBe(1);
+    expect(answer.payload['loanId']).toBe(loanForSubmit);
+
+    const release = await readRelease(releaseWithinAvailable);
+    expect(release.state).toBe('submitted');
+    expect(release.revision).toBe(1);
+    expect(await releaseEventCount(releaseWithinAvailable)).toBe(1);
+
+    // The request now holds credit that has not moved, so the borrower's own
+    // figure falls by exactly what they asked for while the ledger stands still.
+    const after = await readBalance(loanForSubmit);
+    expect(after.outstanding).toBe('100000.00');
+    expect(after.pending).toBe('50000.00');
+    expect(after.available).toBe('100000.00');
+  });
+
+  /**
+   * The coherence plan/06 is about, asserted rather than asserted about.
+   *
+   * The cap the guard compared against is read back out of the blocker and
+   * checked against `loan_balance_v.available` -- the number the borrower's
+   * screen shows. A test that recomputed the arithmetic would agree with the
+   * guard even if the guard and the view had drifted apart, which is the one
+   * failure this criterion exists to prevent.
+   */
+  it('refuses a request larger than the available credit, and names the shortfall', async () => {
+    const balance = await readBalance(loanForTooLarge);
+    expect(balance.available).toBe('150000.00');
+
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseTooLarge,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(answer.payload['code']).toBe('guard_refused');
+
+    const blocker = blockerById(answer, 'release_within_available');
+    expect(blocker.status).toBe('fail');
+    // Minor units, which is how money crosses a RuleResult.
+    expect(blocker.inputs['maximum']).toBe(15_000_000);
+    expect(blocker.inputs['actual']).toBe(20_000_000);
+    expect(blocker.delta?.shortfall).toBe(5_000_000);
+    expect(blocker.explain).toContain('$50,000.00');
+
+    // The figure the guard used and the figure the borrower is shown.
+    expect(blocker.inputs['maximum']).toBe(
+      Number(balance.available.replace('.', '')),
+    );
+
+    expect((await readRelease(releaseTooLarge)).state).toBe('draft');
+    expect(await releaseEventCount(releaseTooLarge)).toBe(0);
+  });
+
+  it('hides a release on a loan the caller cannot read', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseForeign,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+    expect((await readRelease(releaseForeign)).state).toBe('draft');
+  });
+
+  it('hides a release at another organisation from a lender', async () => {
+    const answer = await post(foreignLender.token, {
+      machine: 'credit_release',
+      subjectId: releaseToApprove,
+      event: 'approve',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(404);
+    expect(answer.payload['code']).toBe('subject_not_found');
+  });
+
+  it('refuses a borrower firing a decision that is the lender\'s', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseForRoleRefusal,
+      event: 'begin_review',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(403);
+    expect(answer.payload['code']).toBe('role_not_permitted');
+    expect((await readRelease(releaseForRoleRefusal)).state).toBe('submitted');
+  });
+
+  it('refuses an event that does not leave the release\'s state', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseCancelled,
+      event: 'approve',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('state_conflict');
+    expect(currentOf(answer)['state']).toBe('cancelled');
+  });
+
+  it('answers 409 when the release moved under the caller, and writes no event', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseStale,
+      event: 'approve',
+      expectedRevision: 7,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('revision_conflict');
+    expect(currentOf(answer)).toEqual({ state: 'under_review', revision: 0 });
+    expect((await readRelease(releaseStale)).state).toBe('under_review');
+    expect(await releaseEventCount(releaseStale)).toBe(0);
+  });
+
+  it('records the lender who approved it', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseToApprove,
+      event: 'approve',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('approved');
+
+    const release = await readRelease(releaseToApprove);
+    expect(release.state).toBe('approved');
+    // No client holds a grant on this column, so this handler is its only
+    // possible author: a decision with no decider could never be repaired.
+    expect(release.decided_by).toBe(lender.id);
+    expect(release.decline_reason).toBeNull();
+  });
+
+  it('refuses a decline that carries no reason, and leaves the release alone', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseToDecline,
+      event: 'decline',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(400);
+    expect(answer.payload['code']).toBe('invalid_request');
+    expect(String(answer.payload['reason'])).toContain('declineReason');
+
+    expect((await readRelease(releaseToDecline)).state).toBe('under_review');
+    expect(await releaseEventCount(releaseToDecline)).toBe(0);
+  });
+
+  it('writes the decline reason in the same statement as the state change', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseToDecline,
+      event: 'decline',
+      expectedRevision: 0,
+      declineReason: 'Ask again after the crop insurance certificate is renewed.',
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('declined');
+
+    const release = await readRelease(releaseToDecline);
+    expect(release.state).toBe('declined');
+    expect(release.decided_by).toBe(lender.id);
+    expect(release.decline_reason).toBe(
+      'Ask again after the crop insurance certificate is renewed.',
+    );
+  });
+
+  it('refuses a request against a closed facility', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseOnClosedLoan,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    expect(blockerById(answer, 'loan_is_active').status).toBe('fail');
+    expect((await readRelease(releaseOnClosedLoan)).state).toBe('draft');
+  });
+
+  /**
+   * What issue #26 established, on the machine that made it matter.
+   *
+   * `cancel` declares no guard and no effect, so it reads no rule set. The
+   * criteria are therefore not evaluated for it, and a balance that would
+   * refuse a `submit` -- here, a facility that has been closed -- must not
+   * stand between a borrower and abandoning a request they have already made.
+   */
+  it('lets a borrower cancel a request the criteria would refuse to submit', async () => {
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseToCancel,
+      event: 'cancel',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('cancelled');
+    expect(blockersOf(answer)).toEqual([]);
+    expect((await readRelease(releaseToCancel)).state).toBe('cancelled');
+  });
+
+});
+
+// Disbursing is the moment money moves, and plan/06 states the invariant it has
+// to hold: "a funded release with no ledger entry, or a draw with no release,
+// must be unrepresentable". Half of that is a UNIQUE constraint on
+// ledger_entry.release_id, so a retried disbursement is refused by the database
+// rather than by this code remembering to look first.
+describe('disbursing a credit release', () => {
+  it('posts exactly one signed ledger entry, and moves the right balance', async () => {
+    const before = await readBalance(loanForDisburse);
+    expect(before).toEqual({
+      approved_limit: '250000.00',
+      outstanding: '10000.00',
+      pending: '25000.00',
+      available: '215000.00',
+    });
+
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseToDisburse,
+      event: 'disburse',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(200);
+    expect(answer.payload['to']).toBe('funded');
+    expect(answer.payload['effects']).toEqual(['post_ledger_entry']);
+
+    const entries = await readLedgerEntries(loanForDisburse);
+    const posted = entries.filter((entry) => entry.release_id === releaseToDisburse);
+    expect(posted).toHaveLength(1);
+    // Signed, and positive: a draw raises what is outstanding, which is what
+    // lets the balance be a plain sum rather than a case over `kind`.
+    expect(posted[0]?.kind).toBe('draw');
+    expect(posted[0]?.amount).toBe('25000.00');
+
+    /**
+     * The two truths, one row apart.
+     *
+     * The borrower's available credit does NOT move: the money was already
+     * spoken for as `pending` and has merely changed from committed to drawn.
+     * The lender's undrawn limit -- `approved_limit - outstanding` -- does. If
+     * the borrower's figure had moved here, the release would have been
+     * counted twice: once as pending and again on the ledger.
+     */
+    const after = await readBalance(loanForDisburse);
+    expect(after.outstanding).toBe('35000.00');
+    // '0' and not '0.00': with nothing pending the sum is null and the view's
+    // `coalesce(..., 0)` supplies an untyped integer literal, so Postgres
+    // renders no scale. @lj/domain's money parser reads either, which is why
+    // this is a note rather than a defect -- but a caller comparing these as
+    // STRINGS would be wrong here and nowhere else.
+    expect(after.pending).toBe('0');
+    expect(after.available).toBe('215000.00');
+  });
+
+  /**
+   * The whole coherence claim, checked on the far side of a disbursement.
+   *
+   * The blocker carries the cap the guard applied, and it is compared against
+   * `loan_balance_v.available` read straight from the database. The probe asks
+   * for exactly one cent more than the view says is there, so the two figures
+   * cannot agree by accident.
+   */
+  it('guards the next request with the balance the disbursement produced', async () => {
+    const balance = await readBalance(loanForDisburse);
+    expect(balance.available).toBe('215000.00');
+
+    const answer = await post(borrower.token, {
+      machine: 'credit_release',
+      subjectId: releaseProbeAfterDisburse,
+      event: 'submit',
+      expectedRevision: 0,
+    });
+
+    expect(answer.status).toBe(422);
+    const blocker = blockerById(answer, 'release_within_available');
+    expect(blocker.inputs['maximum']).toBe(Number(balance.available.replace('.', '')));
+    expect(blocker.delta?.shortfall).toBe(1);
+  });
+
+  /**
+   * The half of plan/06's invariant that is a constraint rather than a
+   * sequence: a doubled disbursement must be unrepresentable.
+   *
+   * The endpoint cannot reach this -- nothing leaves `funded` on `disburse`, so
+   * a retried request is refused by the machine one step earlier. The runner is
+   * therefore called directly, which is the only way to prove that the refusal
+   * comes from the UNIQUE constraint on `ledger_entry.release_id` and not from
+   * this code remembering to look first. A check-then-insert would be a race,
+   * and the balance it produced would be one nobody could explain.
+   */
+  it('is refused by the database if one release is disbursed twice', async () => {
+    const release = await loadCreditRelease(service, releaseToDisburse);
+    const loan = await loadLoan(service, loanForDisburse);
+    expect(release).not.toBeNull();
+    expect(loan).not.toBeNull();
+    if (release === null || loan === null) {
+      return;
+    }
+
+    const outcome = await runEffects(service, [{ kind: 'post_ledger_entry' }], {
+      applicationId: appDisburseLoan,
+      revision: 1,
+      eligibility: [],
+      requiredDocs: [],
+      slot: null,
+      upload: null,
+      loanTerms: null,
+      release,
+      loan,
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.ok === false && outcome.kind).toBe('post_ledger_entry');
+
+    const posted = (await readLedgerEntries(loanForDisburse)).filter(
+      (entry) => entry.release_id === releaseToDisburse,
+    );
+    expect(posted).toHaveLength(1);
+  });
+
+  it('writes no ledger entry when the release moved under the caller', async () => {
+    const answer = await post(lender.token, {
+      machine: 'credit_release',
+      subjectId: releaseStaleDisburse,
+      event: 'disburse',
+      expectedRevision: 9,
+    });
+
+    expect(answer.status).toBe(409);
+    expect(answer.payload['code']).toBe('revision_conflict');
+
+    // The state change is the serialisation point and it comes first, so a
+    // stale revision reaches no effect at all.
+    expect(await readLedgerEntries(loanForStaleDisburse)).toHaveLength(1);
+    expect((await readRelease(releaseStaleDisburse)).state).toBe('approved');
+    expect(await releaseEventCount(releaseStaleDisburse)).toBe(0);
   });
 });

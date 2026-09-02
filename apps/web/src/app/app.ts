@@ -37,7 +37,11 @@ interface NavigationItem {
 const NAVIGATION: readonly NavigationItem[] = [
   { label: 'Dashboard', path: '/', audience: 'borrower' },
   { label: 'Applications', path: '/apply', audience: 'borrower' },
-  { label: 'Lending desk', path: '/lender', audience: 'lender' },
+  { label: 'Loans', path: '/loans', audience: 'borrower' },
+  // Pointed at the queue's own URL rather than at /lender, which redirects to
+  // it: a menu should name the page somebody would bookmark, and the exact
+  // matching below would otherwise never mark this row active.
+  { label: 'Lending desk', path: '/lender/queue', audience: 'lender' },
 ];
 
 @Component({

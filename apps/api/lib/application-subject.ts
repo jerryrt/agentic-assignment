@@ -19,12 +19,11 @@ import {
 } from '@lj/db';
 import {
   ApplicationBorrowerViewSchema,
-  moneyFromNumericString,
   parseApplicationData,
+  readNumericMoney,
   type ApplicationData,
   type ApplicationState,
   type JsonValue,
-  type Money,
   type RuleResult,
 } from '@lj/domain';
 import {
@@ -47,6 +46,7 @@ import {
 import type { Actor } from './actor.ts';
 import { buildDocumentContext } from './document-pack.ts';
 import type { SubjectSnapshot } from './http.ts';
+import { narrowEvent } from './machines.ts';
 
 export interface ApplicationSubject {
   readonly id: string;
@@ -123,31 +123,9 @@ export function applicationReadableBy(subject: ApplicationSubject, actor: Actor)
 
 /** The machine's events, narrowed from the string the request carried. */
 export function asApplicationEvent(event: string): ApplicationEvent | null {
-  return (APPLICATION_EVENTS as readonly string[]).includes(event)
-    ? (event as ApplicationEvent)
-    : null;
+  return narrowEvent(APPLICATION_EVENTS, event);
 }
 
-/**
- * `numeric` as PostgREST renders it, turned into minor units without a float
- * multiplication.
- *
- * PostgREST emits a numeric column as a bare JSON number, so `1234.56` has
- * already been through a double by the time it reaches this process. The
- * conversion @lj/domain warns about -- `Math.trunc(value * 100)` -- would lose
- * a cent on exactly the values nobody checks. Rendering the double back to its
- * shortest round-tripping decimal recovers the original digits exactly for
- * every value `numeric(14,2)` can hold (its widest is ~1e12, four orders below
- * the safe-integer limit at two decimal places), and @lj/domain's exact string
- * parser does the rest.
- */
-function moneyFromPostgrestNumeric(value: number): Money | null {
-  try {
-    return moneyFromNumericString(String(value));
-  } catch {
-    return null;
-  }
-}
 
 /**
  * The products this application is evaluated against.
@@ -164,13 +142,21 @@ function eligibilityProducts(rows: readonly LoanProduct[]): EligibilityProduct[]
     if (!criteria.ok) {
       continue;
     }
-    products.push({
-      id: row.id,
-      name: row.name,
-      minAmount: row.min_amount === null ? null : moneyFromPostgrestNumeric(row.min_amount),
-      maxAmount: row.max_amount === null ? null : moneyFromPostgrestNumeric(row.max_amount),
-      criteria: criteria.criteria,
-    });
+    // The amount band is a lending threshold, so a figure that will not read
+    // drops the product exactly as unparseable criteria do. Returning null
+    // instead would read as "this product has no minimum" and widen who
+    // qualifies -- failing open on a credit criterion (@lj/domain, #57).
+    try {
+      products.push({
+        id: row.id,
+        name: row.name,
+        minAmount: readNumericMoney(row.min_amount),
+        maxAmount: readNumericMoney(row.max_amount),
+        criteria: criteria.criteria,
+      });
+    } catch {
+      continue;
+    }
   }
   return products;
 }

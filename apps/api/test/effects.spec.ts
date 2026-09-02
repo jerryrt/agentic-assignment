@@ -6,7 +6,7 @@
 // schema -- a mock of the snapshot write would agree with whatever this code
 // believes, which is the one thing that must not be assumed.
 
-import { applicationMachine, apply } from '@lj/workflow';
+import { applicationMachine, apply, creditReleaseMachine, type EffectSpec } from '@lj/workflow';
 import { describe, expect, it } from 'vitest';
 
 import { declaresEffect, RUNNABLE_EFFECT_KINDS, unrunnableEffects } from '../lib/effects.ts';
@@ -32,6 +32,47 @@ describe('what the application machine declares', () => {
       { kind: 'create_document_slots' },
     ]);
   });
+
+  /**
+   * The other effect whose absence would be silent. An application at `funded`
+   * with no loan behind it says money moved when nothing did, and nothing in
+   * the application's own row would show it.
+   */
+  it('creates the loan when a lender funds an approved application', () => {
+    const outcome = apply(
+      applicationMachine,
+      'approved',
+      'fund',
+      'lender',
+      NO_RULES_EVALUATED,
+    );
+
+    expect(outcome.ok === true && outcome.effects).toEqual([{ kind: 'create_loan' }]);
+  });
+});
+
+describe('what the credit release machine declares', () => {
+  /**
+   * The third effect whose absence would be silent, and the one that is about
+   * money: a release at `funded` with nothing on the ledger is a disbursement
+   * no statement shows.
+   */
+  it('posts the ledger entry when a lender disburses an approved request', () => {
+    const outcome = apply(creditReleaseMachine, 'approved', 'disburse', 'lender', {
+      availableCredit: [],
+    });
+
+    expect(outcome.ok === true && outcome.effects).toEqual([{ kind: 'post_ledger_entry' }]);
+  });
+
+  /** No guard on `disburse`, so the empty context above is not a shortcut. */
+  it('guards only the submit, and refuses it on an unevaluated rule set', () => {
+    const outcome = apply(creditReleaseMachine, 'draft', 'submit', 'borrower', {
+      availableCredit: [],
+    });
+
+    expect(outcome.ok).toBe(false);
+  });
 });
 
 describe('the effects this API can run', () => {
@@ -55,27 +96,37 @@ describe('the effects this API can run', () => {
     expect(unrunnableEffects([{ kind: 'write_eligibility_snapshot' }])).toEqual([]);
   });
 
-  /**
-   * The refusal that matters more than the runner. `create_loan` needs a `loan`
-   * table that does not exist, so funding an application would otherwise move
-   * it to a state that says money changed hands when nothing did -- discovered
-   * later, by whoever reconciles.
-   */
-  it('names an effect it has no runner for, rather than skipping it', () => {
-    expect(RUNNABLE_EFFECT_KINDS.has('create_loan')).toBe(false);
-    expect(unrunnableEffects([{ kind: 'create_loan' }])).toEqual(['create_loan']);
-    expect(unrunnableEffects([{ kind: 'post_ledger_entry' }])).toEqual([
+  it('names every effect kind it has a runner for', () => {
+    expect([...RUNNABLE_EFFECT_KINDS].sort()).toEqual([
+      'create_document_slots',
+      'create_loan',
+      'extract_document',
       'post_ledger_entry',
+      'write_eligibility_snapshot',
     ]);
+    expect(
+      unrunnableEffects([{ kind: 'create_loan' }, { kind: 'post_ledger_entry' }]),
+    ).toEqual([]);
   });
 
-  it('reports the unrunnable ones in the order they were declared', () => {
+  /**
+   * The refusal that matters more than any runner, kept honest with a kind that
+   * does not exist.
+   *
+   * Every effect the three machines declare now has a runner, so there is no
+   * real kind left to refuse with -- and the property must not rot for want of
+   * a case: an effect nothing can carry out refuses the transition BEFORE the
+   * update, rather than moving the subject and skipping what the move promised.
+   */
+  it('reports an effect with no runner, in the order it was declared', () => {
+    const unimplemented = { kind: 'settle_escrow' } as unknown as EffectSpec;
+
     expect(
       unrunnableEffects([
         { kind: 'write_eligibility_snapshot' },
-        { kind: 'post_ledger_entry' },
-        { kind: 'create_loan' },
+        unimplemented,
+        { kind: 'create_document_slots' },
       ]),
-    ).toEqual(['post_ledger_entry', 'create_loan']);
+    ).toEqual(['settle_escrow']);
   });
 });
