@@ -11,6 +11,7 @@
 
 /// <reference types="node" />
 
+import { execFileSync } from 'node:child_process';
 import { defineConfig, devices } from '@playwright/test';
 
 // Every path in this file is relative to the repository root, which is where
@@ -33,6 +34,27 @@ function fromEnv(name: string): string | undefined {
   const value = process.env[name];
   return value !== undefined && value.length > 0 ? value : undefined;
 }
+
+/**
+ * The Supabase URL and anon key, read at configuration time.
+ *
+ * Angular has no runtime environment, and `angular.json`'s `define` cannot
+ * interpolate, so the values are compiled into the app by the dev server that
+ * serves it. The fixtures read the same stack again at run time for their own
+ * requests; this read exists only to configure the server below.
+ *
+ * The local keys are worthless off 127.0.0.1 and are never written to a file.
+ */
+function readStackConfig(): { url: string; anonKey: string } {
+  const raw = execFileSync('supabase', ['status', '-o', 'json'], { encoding: 'utf8' });
+  const status = JSON.parse(raw) as { API_URL?: string; ANON_KEY?: string };
+  if (status.API_URL === undefined || status.ANON_KEY === undefined) {
+    throw new Error('supabase status did not report API_URL and ANON_KEY; is the stack running?');
+  }
+  return { url: status.API_URL, anonKey: status.ANON_KEY };
+}
+
+const stack = readStackConfig();
 
 const PORT = Number(fromEnv('E2E_PORT') ?? 4200);
 const baseURL = fromEnv('E2E_BASE_URL') ?? `http://${HOST}:${PORT}`;
@@ -160,7 +182,15 @@ export default defineConfig({
     // The app under test.  Only the web app: the smoke journey does not call the
     // API, and starting the whole turbo dev graph would make a failure to boot
     // the API look like a failure of the browser suite.
-    command: `pnpm --filter @lj/web exec ng serve --host ${HOST} --port ${PORT}`,
+    // The Supabase configuration is compiled in, because Angular has no runtime
+    // env and `angular.json`'s `define` cannot interpolate. Passing it here
+    // rather than through the package's `dev` script is deliberate: the CLI
+    // rejects `--define` after the `--` separator that `pnpm run` inserts, so a
+    // journey that signs in would fail against an app built with blank config.
+    command:
+      `pnpm --filter @lj/web exec ng serve --host ${HOST} --port ${PORT}` +
+      ` --define "LJ_SUPABASE_URL='${stack.url}'"` +
+      ` --define "LJ_SUPABASE_ANON_KEY='${stack.anonKey}'"`,
     url: baseURL,
     // Locally, reuse a dev server the developer already has running -- the inner
     // loop is the point.  In CI there is never one to reuse, and silently
